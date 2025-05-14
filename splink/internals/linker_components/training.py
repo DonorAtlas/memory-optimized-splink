@@ -3,10 +3,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, List, Union
 
-from splink.internals.blocking import (
-    BlockingRule,
-    SaltedBlockingRule,
-)
+from splink.internals.blocking import BlockingRule, SaltedBlockingRule
 from splink.internals.blocking_analysis import (
     _cumulative_comparisons_to_be_scored_from_blocking_rules,
 )
@@ -16,13 +13,9 @@ from splink.internals.em_training_session import EMTrainingSession
 from splink.internals.estimate_u import estimate_u_values
 from splink.internals.m_from_labels import estimate_m_from_pairwise_labels
 from splink.internals.m_training import estimate_m_values_from_label_column
-from splink.internals.misc import (
-    ensure_is_iterable,
-)
+from splink.internals.misc import ensure_is_iterable
 from splink.internals.pipeline import CTEPipeline
-from splink.internals.vertically_concatenate import (
-    compute_df_concat_with_tf,
-)
+from splink.internals.vertically_concatenate import compute_df_concat_with_tf
 
 if TYPE_CHECKING:
     from splink.internals.linker import Linker
@@ -43,6 +36,7 @@ class LinkerTraining:
         deterministic_matching_rules: List[Union[str, BlockingRuleCreator]],
         recall: float,
         max_rows_limit: int = int(1e9),
+        drop_materialised_id_pairs_dataframes: bool = False,
     ) -> None:
         """Estimate the model parameter `probability_two_random_records_match` using
         a direct estimation approach.
@@ -87,8 +81,7 @@ class LinkerTraining:
 
         if (recall > 1) or (recall <= 0):
             raise ValueError(
-                f"Estimated recall must be greater than 0 "
-                f"and no more than 1. Supplied value {recall}."
+                f"Estimated recall must be greater than 0 " f"and no more than 1. Supplied value {recall}."
             ) from None
 
         deterministic_matching_rules = ensure_is_iterable(deterministic_matching_rules)
@@ -108,6 +101,7 @@ class LinkerTraining:
             max_rows_limit=max_rows_limit,
             unique_id_input_column=self._linker._settings_obj.column_info_settings.unique_id_input_column,
             source_dataset_input_column=self._linker._settings_obj.column_info_settings.source_dataset_input_column,
+            drop_materialised_id_pairs_dataframes=drop_materialised_id_pairs_dataframes,
         )
 
         records = pd_df.to_dict(orient="records")
@@ -163,9 +157,7 @@ class LinkerTraining:
             f"{num_expected_matches:,.2f} matching pairs"
         )
 
-    def estimate_u_using_random_sampling(
-        self, max_pairs: float = 1e6, seed: int = None
-    ) -> None:
+    def estimate_u_using_random_sampling(self, max_pairs: float = 1e6, seed: int = None) -> None:
         """Estimate the u parameters of the linkage model using random sampling.
 
         The u parameters estimate the proportion of record comparisons that fall
@@ -290,10 +282,7 @@ class LinkerTraining:
         )
 
         if not isinstance(blocking_rule_obj, (BlockingRule, SaltedBlockingRule)):
-            raise TypeError(
-                "EM blocking rules must be plain blocking rules, not "
-                "exploding blocking rules"
-            )
+            raise TypeError("EM blocking rules must be plain blocking rules, not " "exploding blocking rules")
 
         em_training_session = EMTrainingSession(
             self._linker,
@@ -356,9 +345,7 @@ class LinkerTraining:
             linker.training.estimate_m_from_pairwise_labels("labels")
             ```
         """
-        labels_tablename = self._linker._get_labels_tablename_from_input(
-            labels_splinkdataframe_or_table_name
-        )
+        labels_tablename = self._linker._get_labels_tablename_from_input(labels_splinkdataframe_or_table_name)
         estimate_m_from_pairwise_labels(self._linker, labels_tablename)
 
     def estimate_m_from_label_column(self, label_colname: str) -> None:

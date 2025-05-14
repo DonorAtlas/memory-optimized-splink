@@ -16,17 +16,13 @@ from splink.internals.misc import ascii_uid, ensure_is_list, parse_duration
 from splink.internals.pipeline import CTEPipeline
 from splink.internals.splink_dataframe import SplinkDataFrame
 
-from .dialects import (
-    SplinkDialect,
-)
+from .dialects import SplinkDialect
 from .exceptions import SplinkException
 
 logger = logging.getLogger(__name__)
 
 # minimal acceptable table types
-AcceptableInputTableType = Union[
-    str, PandasDataFrame, List[Dict[str, Any]], Dict[str, Any]
-]
+AcceptableInputTableType = Union[str, PandasDataFrame, List[Dict[str, Any]], Dict[str, Any]]
 # a placeholder type. This will depend on the backend subclass - something
 # 'tabley' for that backend, such as duckdb.DuckDBPyRelation or spark.DataFrame
 TablishType = TypeVar("TablishType")
@@ -79,9 +75,7 @@ class DatabaseAPI(ABC, Generic[TablishType]):
             ) from e
 
     @final
-    def _sql_to_splink_dataframe(
-        self, sql: str, templated_name: str, physical_name: str
-    ) -> SplinkDataFrame:
+    def _sql_to_splink_dataframe(self, sql: str, templated_name: str, physical_name: str) -> SplinkDataFrame:
         """
         Create a table in the backend using some given sql
 
@@ -89,11 +83,13 @@ class DatabaseAPI(ABC, Generic[TablishType]):
 
         Returns a SplinkDataFrame which also uses templated_name
         """
+        logger.info(f" (SQL to splink dataframe): setting up for execute sql")
         sql = self._setup_for_execute_sql(sql, physical_name)
+        logger.info(f" (SQL to splink dataframe): logging and running sql execution")
         spark_df = self._log_and_run_sql_execution(sql, templated_name, physical_name)
-        output_df = self._cleanup_for_execute_sql(
-            spark_df, templated_name, physical_name
-        )
+        logger.info(f" (SQL to splink dataframe): cleaning up for execute sql")
+        output_df = self._cleanup_for_execute_sql(spark_df, templated_name, physical_name)
+        logger.info(f" (SQL to splink dataframe): appending to intermediate table cache")
         self._intermediate_table_cache.executed_queries.append(output_df)
         return output_df
 
@@ -111,9 +107,7 @@ class DatabaseAPI(ABC, Generic[TablishType]):
         # Look for these 'named' tables in the cache prior
         # to looking for the hashed version s
         if output_tablename_templated in self._intermediate_table_cache:
-            return self._intermediate_table_cache.get_with_logging(
-                output_tablename_templated
-            )
+            return self._intermediate_table_cache.get_with_logging(output_tablename_templated)
 
         if table_name_hash in self._intermediate_table_cache:
             return self._intermediate_table_cache.get_with_logging(table_name_hash)
@@ -124,9 +118,7 @@ class DatabaseAPI(ABC, Generic[TablishType]):
                 f"Found cache for {output_tablename_templated} "
                 f"in database using table name with physical name {table_name_hash}"
             )
-            return self.table_to_splink_dataframe(
-                output_tablename_templated, table_name_hash
-            )
+            return self.table_to_splink_dataframe(output_tablename_templated, table_name_hash)
         return None
 
     @final
@@ -139,15 +131,15 @@ class DatabaseAPI(ABC, Generic[TablishType]):
         # differences from _sql_to_splink_dataframe:
         # this _calculates_ physical name, handles debug_mode,
         # and checks cache before querying
+        logger.info(f" (SQL to splink dataframe checking cache): hashing sql")
         to_hash = (sql + self._cache_uid).encode("utf-8")
         hash = hashlib.sha256(to_hash).hexdigest()[:9]
         # Ensure hash is valid sql table name
         table_name_hash = f"{output_tablename_templated}_{hash}"
 
         if use_cache:
-            splink_dataframe = self._get_table_from_cache_or_db(
-                table_name_hash, output_tablename_templated
-            )
+            logger.info(f" (SQL to splink dataframe checking cache): checking cache")
+            splink_dataframe = self._get_table_from_cache_or_db(table_name_hash, output_tablename_templated)
             if splink_dataframe is not None:
                 return splink_dataframe
 
@@ -168,9 +160,8 @@ class DatabaseAPI(ABC, Generic[TablishType]):
                 print(df_pd)  # noqa: T201
 
         else:
-            splink_dataframe = self._sql_to_splink_dataframe(
-                sql, output_tablename_templated, table_name_hash
-            )
+            logger.info(f" (SQL to splink dataframe checking cache): executing sql to splink dataframe")
+            splink_dataframe = self._sql_to_splink_dataframe(sql, output_tablename_templated, table_name_hash)
 
         splink_dataframe.created_by_splink = True
         splink_dataframe.sql_used_to_create = sql
@@ -192,11 +183,15 @@ class DatabaseAPI(ABC, Generic[TablishType]):
         pipeline is set to spent after execution ensuring it cannot be
         acidentally reused
         """
+        logger.info(f" (SQL pipeline to splink dataframe): {pipeline}")
 
         if not self.debug_mode:
             sql_gen = pipeline.generate_cte_pipeline_sql()
             output_tablename_templated = pipeline.output_table_name
 
+            logger.info(
+                f" (SQL pipeline to splink dataframe): running sql_to_splink_dataframe_checking_cache"
+            )
             splink_dataframe = self.sql_to_splink_dataframe_checking_cache(
                 sql_gen,
                 output_tablename_templated,
@@ -210,9 +205,7 @@ class DatabaseAPI(ABC, Generic[TablishType]):
                 output_tablename = cte.output_table_name
                 sql = cte.sql
                 print("------")  # noqa: T201
-                print(  # noqa: T201
-                    f"--------Creating table: {output_tablename}--------"
-                )
+                print(f"--------Creating table: {output_tablename}--------")  # noqa: T201
 
                 splink_dataframe = self.sql_to_splink_dataframe_checking_cache(
                     sql,
@@ -277,9 +270,7 @@ class DatabaseAPI(ABC, Generic[TablishType]):
         table_name: str,
         overwrite: bool = False,
     ) -> SplinkDataFrame:
-        tables_dict = self.register_multiple_tables(
-            [input_table], [table_name], overwrite=overwrite
-        )
+        tables_dict = self.register_multiple_tables([input_table], [table_name], overwrite=overwrite)
         return tables_dict[table_name]
 
     def _setup_for_execute_sql(self, sql: str, physical_name: str) -> str:
@@ -306,9 +297,7 @@ class DatabaseAPI(ABC, Generic[TablishType]):
         self._execute_sql_against_backend(drop_sql)
 
     @abstractmethod
-    def _table_registration(
-        self, input: AcceptableInputTableType, table_name: str
-    ) -> None:
+    def _table_registration(self, input: AcceptableInputTableType, table_name: str) -> None:
         """
         Actually register table with backend.
 
@@ -317,9 +306,7 @@ class DatabaseAPI(ABC, Generic[TablishType]):
         pass
 
     @abstractmethod
-    def table_to_splink_dataframe(
-        self, templated_name: str, physical_name: str
-    ) -> SplinkDataFrame:
+    def table_to_splink_dataframe(self, templated_name: str, physical_name: str) -> SplinkDataFrame:
         pass
 
     @abstractmethod
@@ -340,9 +327,7 @@ class DatabaseAPI(ABC, Generic[TablishType]):
         input_tables = ensure_is_list(input_tables)
         return input_tables
 
-    def remove_splinkdataframe_from_cache(
-        self, splink_dataframe: SplinkDataFrame
-    ) -> None:
+    def remove_splinkdataframe_from_cache(self, splink_dataframe: SplinkDataFrame) -> None:
         keys_to_delete = set()
         for key, df in self._intermediate_table_cache.items():
             if df.physical_name == splink_dataframe.physical_name:

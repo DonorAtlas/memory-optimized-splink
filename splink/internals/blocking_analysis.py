@@ -160,9 +160,7 @@ def _count_comparisons_from_blocking_rule_pre_filter_conditions_sqls(
     group by {l_cols_gb_str}
     """
 
-    sqls.append(
-        {"sql": sql, "output_table_name": "__splink__count_comparisons_from_blocking_l"}
-    )
+    sqls.append({"sql": sql, "output_table_name": "__splink__count_comparisons_from_blocking_l"})
 
     sql = f"""
     select {r_cols_sel_str}, count(*) as count_r
@@ -170,9 +168,7 @@ def _count_comparisons_from_blocking_rule_pre_filter_conditions_sqls(
     group by {r_cols_gb_str}
     """
 
-    sqls.append(
-        {"sql": sql, "output_table_name": "__splink__count_comparisons_from_blocking_r"}
-    )
+    sqls.append({"sql": sql, "output_table_name": "__splink__count_comparisons_from_blocking_r"})
 
     sql = f"""
     select count_l, count_r, count_l * count_r as block_count
@@ -215,8 +211,7 @@ def _row_counts_per_input_table(
         """
     else:
         raise ValueError(
-            "If you are using link_only or link_and_dedupe, you must provide a "
-            "source_dataset_column_name"
+            "If you are using link_only or link_and_dedupe, you must provide a " "source_dataset_column_name"
         )
     pipeline.enqueue_sql(sql, "__splink__df_count")
     return db_api.sql_pipeline_to_splink_dataframe(pipeline)
@@ -247,9 +242,7 @@ def _process_unique_id_columns(
             )
         else:
             return (
-                InputColumn(
-                    source_dataset_column_name, sqlglot_dialect_str=sqglot_dialect
-                ),
+                InputColumn(source_dataset_column_name, sqlglot_dialect_str=sqglot_dialect),
                 InputColumn(unique_id_column_name, sqlglot_dialect_str=sqglot_dialect),
             )
 
@@ -288,6 +281,7 @@ def _cumulative_comparisons_to_be_scored_from_blocking_rules(
     max_rows_limit: int = int(1e9),
     unique_id_input_column: InputColumn,
     source_dataset_input_column: Optional[InputColumn],
+    drop_materialised_id_pairs_dataframes: bool = False,
 ) -> pd.DataFrame:
     # Check none of the blocking rules will create a vast/computationally
     # intractable number of comparisons
@@ -303,9 +297,7 @@ def _cumulative_comparisons_to_be_scored_from_blocking_rules(
             unique_id_input_column=unique_id_input_column,
             source_dataset_input_column=source_dataset_input_column,
         )
-        count_pre_filter = count[
-            "number_of_comparisons_generated_pre_filter_conditions"
-        ]
+        count_pre_filter = count["number_of_comparisons_generated_pre_filter_conditions"]
 
         if float(count_pre_filter) > max_rows_limit:
             # TODO: Use a SplinkException?  Want this to give a sensible message
@@ -400,9 +392,7 @@ def _cumulative_comparisons_to_be_scored_from_blocking_rules(
         }
     )
     if len(result_df) > 0:
-        complete_df = all_rules_df.merge(result_df, on="match_key", how="left").fillna(
-            {"row_count": 0}
-        )
+        complete_df = all_rules_df.merge(result_df, on="match_key", how="left").fillna({"row_count": 0})
 
         complete_df["cumulative_rows"] = complete_df["row_count"].cumsum().astype(int)
         complete_df["start"] = complete_df["cumulative_rows"] - complete_df["row_count"]
@@ -418,7 +408,8 @@ def _cumulative_comparisons_to_be_scored_from_blocking_rules(
         complete_df["cartesian"] = cartesian_count
         complete_df["start"] = 0
 
-    [b.drop_materialised_id_pairs_dataframe() for b in exploding_br_with_id_tables]
+    if drop_materialised_id_pairs_dataframes:
+        [b.drop_materialised_id_pairs_dataframe() for b in exploding_br_with_id_tables]
 
     col_order = [
         "blocking_rule",
@@ -459,16 +450,12 @@ def _count_comparisons_generated_from_blocking_rule(
 
     pre_filter_total_df = db_api.sql_pipeline_to_splink_dataframe(pipeline)
 
-    pre_filter_total = pre_filter_total_df.as_record_dict()[0][
-        "count_of_pairwise_comparisons_generated"
-    ]
+    pre_filter_total = pre_filter_total_df.as_record_dict()[0]["count_of_pairwise_comparisons_generated"]
     pre_filter_total_df.drop_table_from_database_and_remove_from_cache()
 
     # This is sometimes the sum() over zero rows, with returns as a nan (flaot)
     # or None.  This result implies a count of zero.
-    if pre_filter_total is None or (
-        isinstance(pre_filter_total, float) and math.isnan(pre_filter_total)
-    ):
+    if pre_filter_total is None or (isinstance(pre_filter_total, float) and math.isnan(pre_filter_total)):
         pre_filter_total = 0
 
     def add_l_r(sql, table_name):
@@ -478,8 +465,7 @@ def _count_comparisons_generated_from_blocking_rule(
         return tree.sql(dialect=db_api.sql_dialect.sqlglot_dialect)
 
     equi_join_conditions = [
-        add_l_r(i, "l") + " = " + add_l_r(j, "r")
-        for i, j in blocking_rule._equi_join_conditions
+        add_l_r(i, "l") + " = " + add_l_r(j, "r") for i, j in blocking_rule._equi_join_conditions
     ]
 
     equi_join_conditions_joined = " AND ".join(equi_join_conditions)
@@ -625,9 +611,7 @@ def cumulative_comparisons_to_be_scored_from_blocking_rules_data(
     blocking_rules_as_br: List[BlockingRule] = []
     for br in blocking_rules:
         blocking_rules_as_br.append(
-            to_blocking_rule_creator(br).get_blocking_rule(
-                db_api.sql_dialect.sql_dialect_str
-            )
+            to_blocking_rule_creator(br).get_blocking_rule(db_api.sql_dialect.sql_dialect_str)
         )
 
     source_dataset_input_column, unique_id_input_column = _process_unique_id_columns(
@@ -669,9 +653,7 @@ def cumulative_comparisons_to_be_scored_from_blocking_rules_chart(
     blocking_rules_as_br: List[BlockingRule] = []
     for br in blocking_rules:
         blocking_rules_as_br.append(
-            to_blocking_rule_creator(br).get_blocking_rule(
-                db_api.sql_dialect.sql_dialect_str
-            )
+            to_blocking_rule_creator(br).get_blocking_rule(db_api.sql_dialect.sql_dialect_str)
         )
 
     source_dataset_input_column, unique_id_input_column = _process_unique_id_columns(
@@ -692,9 +674,7 @@ def cumulative_comparisons_to_be_scored_from_blocking_rules_chart(
         source_dataset_input_column=source_dataset_input_column,
     )
 
-    return cumulative_blocking_rule_comparisons_generated(
-        pd_df.to_dict(orient="records")
-    )
+    return cumulative_blocking_rule_comparisons_generated(pd_df.to_dict(orient="records"))
 
 
 def n_largest_blocks(
