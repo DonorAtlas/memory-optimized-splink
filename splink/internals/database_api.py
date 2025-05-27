@@ -83,13 +83,13 @@ class DatabaseAPI(ABC, Generic[TablishType]):
 
         Returns a SplinkDataFrame which also uses templated_name
         """
-        logger.info(f" (SQL to splink dataframe): setting up for execute sql")
         sql = self._setup_for_execute_sql(sql, physical_name)
-        logger.info(f" (SQL to splink dataframe): logging and running sql execution")
+        logger.info(
+            f" (SQL to splink dataframe): logging and running sql execution to create table {physical_name}:"
+        )
+        logger.info(sql)
         spark_df = self._log_and_run_sql_execution(sql, templated_name, physical_name)
-        logger.info(f" (SQL to splink dataframe): cleaning up for execute sql")
         output_df = self._cleanup_for_execute_sql(spark_df, templated_name, physical_name)
-        logger.info(f" (SQL to splink dataframe): appending to intermediate table cache")
         self._intermediate_table_cache.executed_queries.append(output_df)
         return output_df
 
@@ -131,14 +131,12 @@ class DatabaseAPI(ABC, Generic[TablishType]):
         # differences from _sql_to_splink_dataframe:
         # this _calculates_ physical name, handles debug_mode,
         # and checks cache before querying
-        logger.info(f" (SQL to splink dataframe checking cache): hashing sql")
         to_hash = (sql + self._cache_uid).encode("utf-8")
         hash = hashlib.sha256(to_hash).hexdigest()[:9]
         # Ensure hash is valid sql table name
         table_name_hash = f"{output_tablename_templated}_{hash}"
 
         if use_cache:
-            logger.info(f" (SQL to splink dataframe checking cache): checking cache")
             splink_dataframe = self._get_table_from_cache_or_db(table_name_hash, output_tablename_templated)
             if splink_dataframe is not None:
                 return splink_dataframe
@@ -160,7 +158,6 @@ class DatabaseAPI(ABC, Generic[TablishType]):
                 print(df_pd)  # noqa: T201
 
         else:
-            logger.info(f" (SQL to splink dataframe checking cache): executing sql to splink dataframe")
             splink_dataframe = self._sql_to_splink_dataframe(sql, output_tablename_templated, table_name_hash)
 
         splink_dataframe.created_by_splink = True
@@ -183,15 +180,9 @@ class DatabaseAPI(ABC, Generic[TablishType]):
         pipeline is set to spent after execution ensuring it cannot be
         acidentally reused
         """
-        logger.info(f" (SQL pipeline to splink dataframe): {pipeline}")
-
         if not self.debug_mode:
             sql_gen = pipeline.generate_cte_pipeline_sql()
             output_tablename_templated = pipeline.output_table_name
-
-            logger.info(
-                f" (SQL pipeline to splink dataframe): running sql_to_splink_dataframe_checking_cache"
-            )
             splink_dataframe = self.sql_to_splink_dataframe_checking_cache(
                 sql_gen,
                 output_tablename_templated,

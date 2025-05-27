@@ -135,14 +135,11 @@ class BlockingRule:
         )
         id_expr_l = _composite_unique_id_from_nodes_sql(unique_id_input_columns, "l")
         id_expr_r = _composite_unique_id_from_nodes_sql(unique_id_input_columns, "r")
-        id_expr_ex_l = _composite_unique_id_from_edges_sql(unique_id_input_columns, "l", "ex")
-        id_expr_ex_r = _composite_unique_id_from_edges_sql(unique_id_input_columns, "r", "ex")
+        id_expr_ex_l = _composite_unique_id_from_edges_sql([unique_id_input_column], "l", "ex")
+        id_expr_ex_r = _composite_unique_id_from_edges_sql([unique_id_input_column], "r", "ex")
 
         select_clauses = [
-            br.exclude_pairs_generated_by_this_rule_sql(
-                source_dataset_input_column,
-                unique_id_input_column,
-            )
+            br.exclude_pairs_generated_by_this_rule_sql(source_dataset_input_column, unique_id_input_column)
             for br in self.preceding_rules
         ]
         previous_rules = ", exclude_pairs AS (" + " UNION ALL ".join(select_clauses) + ")"
@@ -355,10 +352,6 @@ class SaltedBlockingRule(BlockingRule):
         return " UNION ALL ".join(sqls)
 
 
-def _explode_arrays_sql(db_api, tbl_name, columns_to_explode, other_columns_to_retain):
-    return db_api.sql_dialect.explode_arrays_sql(tbl_name, columns_to_explode, other_columns_to_retain)
-
-
 class ExplodingBlockingRule(BlockingRule):
     def __init__(
         self,
@@ -399,7 +392,8 @@ class ExplodingBlockingRule(BlockingRule):
 
         exclude_sql_1, exclude_sql_2 = (
             self.exclude_pairs_generated_by_all_preceding_rules_sql_memory_optimized(
-                source_dataset_input_column, unique_id_input_column
+                source_dataset_input_column,
+                unique_id_input_column,
             )
         )
 
@@ -448,6 +442,7 @@ class ExplodingBlockingRule(BlockingRule):
                 "to set `exploded_id_pair_table` before calling "
                 "exclude_pairs_generated_by_this_rule_sql()."
             )
+
         ids_to_compare_sql = f"select * from {splink_df.physical_name}"
 
         id_expr_l = _composite_unique_id_from_nodes_sql(unique_id_input_columns, "l")
@@ -539,12 +534,14 @@ def materialise_exploded_id_tables(
     splink_df_dict: dict[str, SplinkDataFrame],
     source_dataset_input_column: Optional[InputColumn],
     unique_id_input_column: InputColumn,
+    drop_exploded_tables: bool = False,
 ) -> list[ExplodingBlockingRule]:
     exploding_blocking_rules = [br for br in blocking_rules if isinstance(br, ExplodingBlockingRule)]
 
     if len(exploding_blocking_rules) == 0:
         return []
-    exploded_tables = []
+    exploded_tables: list[SplinkDataFrame] = []
+    unnested_tables: list[SplinkDataFrame] = []
 
     pipeline = CTEPipeline()
 
@@ -579,6 +576,8 @@ def materialise_exploded_id_tables(
         logger.info(f"Unnested table {unnested_table_name} exists: {unnested_table is not None}")
 
         if unnested_table is None:
+            # TODO: This can grab only the set of columns required by blocking rules that use this exploded table.
+            # Don't need to carry around the entire table
             logger.info(f"Exploding arrays for {unnested_table_name}")
             pipeline = CTEPipeline([nodes_concat])
             expl_sql = db_api.sql_dialect.explode_arrays_sql(
@@ -597,6 +596,8 @@ def materialise_exploded_id_tables(
         else:
             logger.info(f"Using existing unnested table {unnested_table_name}")
 
+        if unnested_table not in unnested_tables:
+            unnested_tables.append(unnested_table)
         pipeline = CTEPipeline([unnested_table])
         base_name = "__splink__marginal_exploded_ids_blocking_rule"
         table_name = f"{base_name}_mk_{br.match_key}"
@@ -613,8 +614,38 @@ def materialise_exploded_id_tables(
         pipeline.enqueue_sql(sql, table_name)
 
         marginal_ids_table = db_api.sql_pipeline_to_splink_dataframe(pipeline)
+
+        # Preview 5 rows of the marginal_ids_table
+        logger.info(f"Preview of {table_name} (first 5 rows):")
+        # Get schema information
+        schema_sql = f"SELECT * FROM {marginal_ids_table.physical_name} LIMIT 0"
+        schema_results = db_api._execute_sql_against_backend(schema_sql)
+        column_names = (
+            [col[0] for col in schema_results.description] if hasattr(schema_results, "description") else []
+        )
+        logger.info(f"Schema: {column_names}")
+
+        # Get data preview
+        preview_sql = f"SELECT * FROM {marginal_ids_table.physical_name} LIMIT 5"
+        preview_results = db_api._execute_sql_against_backend(preview_sql)
+        # Convert to fetchall() to get a list of rows we can iterate over
+        rows = preview_results.fetchall() if hasattr(preview_results, "fetchall") else list(preview_results)
+        for row in rows:
+            logger.info(f"--{row}")
+
         br.exploded_id_pair_table = marginal_ids_table
         exploded_tables.append(marginal_ids_table)
+
+    logger.info("Dropping exploded tables from database after materializing blocked pairs:")
+    for table in unnested_tables:
+        logger.info(f"--{table.physical_name}")
+
+    # TODO: figure out how to pass the same br objects from this to predict() so we can drop these tables
+    if drop_exploded_tables:
+        [
+            table.drop_table_from_database_and_remove_from_cache(force_non_splink_table=True)
+            for table in unnested_tables
+        ]
 
     return exploding_blocking_rules
 

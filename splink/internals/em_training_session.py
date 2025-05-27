@@ -74,12 +74,12 @@ class EMTrainingSession:
         self._blocking_rule_for_training = blocking_rule_for_training
         self.estimate_without_term_frequencies = estimate_without_term_frequencies
 
-        self._comparison_levels_to_reverse_blocking_rule: list[
-            ComparisonAndLevelDict
-        ] = Settings._get_comparison_levels_corresponding_to_training_blocking_rule(  # noqa
-            blocking_rule_sql=blocking_rule_for_training.blocking_rule_sql,
-            sqlglot_dialect=self.db_api.sql_dialect.sqlglot_dialect,
-            comparisons=core_model_settings.comparisons,
+        self._comparison_levels_to_reverse_blocking_rule: list[ComparisonAndLevelDict] = (
+            Settings._get_comparison_levels_corresponding_to_training_blocking_rule(  # noqa
+                blocking_rule_sql=blocking_rule_for_training.blocking_rule_sql,
+                sqlglot_dialect=self.db_api.sql_dialect.sqlglot_dialect,
+                comparisons=core_model_settings.comparisons,
+            )
         )
 
         # batch together fixed probabilities rather than keep hold of the bools
@@ -104,12 +104,8 @@ class EMTrainingSession:
             cc_cols = [c.input_name for c in cc_cols]
             if set(br_cols).intersection(cc_cols):
                 comparisons_to_deactivate.append(cc)
-        cc_names_to_deactivate = [
-            cc.output_column_name for cc in comparisons_to_deactivate
-        ]
-        self._comparisons_that_cannot_be_estimated: list[Comparison] = (
-            comparisons_to_deactivate
-        )
+        cc_names_to_deactivate = [cc.output_column_name for cc in comparisons_to_deactivate]
+        self._comparisons_that_cannot_be_estimated: list[Comparison] = comparisons_to_deactivate
 
         filtered_ccs = [
             cc
@@ -138,14 +134,10 @@ class EMTrainingSession:
         self._core_model_settings_history: List[CoreModelSettings] = []
 
     def _training_log_message(self):
-        not_estimated = [
-            cc.output_column_name for cc in self._comparisons_that_cannot_be_estimated
-        ]
+        not_estimated = [cc.output_column_name for cc in self._comparisons_that_cannot_be_estimated]
         not_estimated_str = "".join([f"\n    - {cc}" for cc in not_estimated])
 
-        estimated = [
-            cc.output_column_name for cc in self.core_model_settings.comparisons
-        ]
+        estimated = [cc.output_column_name for cc in self.core_model_settings.comparisons]
         estimated_str = "".join([f"\n    - {cc}" for cc in estimated])
 
         if {"m", "u"}.issubset(self.training_fixed_probabilities):
@@ -186,6 +178,7 @@ class EMTrainingSession:
         )
         pipeline.enqueue_list_of_sqls(sqls)
 
+        logger.info(f"Blocking pairs")
         blocked_pairs = self.db_api.sql_pipeline_to_splink_dataframe(pipeline)
 
         pipeline = CTEPipeline([blocked_pairs, nodes_with_tf])
@@ -200,6 +193,7 @@ class EMTrainingSession:
         )
 
         pipeline.enqueue_list_of_sqls(sqls)
+        logger.info(f"Computing comparison vector values")
         return self.db_api.sql_pipeline_to_splink_dataframe(pipeline)
 
     def _train(self, cvv: SplinkDataFrame = None) -> CoreModelSettings:
@@ -246,13 +240,9 @@ class EMTrainingSession:
         original_core_model_settings = self.original_core_model_settings
         # Add m and u values to original settings
         for cc in self.core_model_settings.comparisons:
-            orig_cc = original_core_model_settings.get_comparison_by_output_column_name(
-                cc.output_column_name
-            )
+            orig_cc = original_core_model_settings.get_comparison_by_output_column_name(cc.output_column_name)
             for cl in cc._comparison_levels_excluding_null:
-                orig_cl = orig_cc._get_comparison_level_by_comparison_vector_value(
-                    cl.comparison_vector_value
-                )
+                orig_cl = orig_cc._get_comparison_level_by_comparison_vector_value(cl.comparison_vector_value)
 
                 if "m" not in self.training_fixed_probabilities:
                     not_observed = LEVEL_NOT_OBSERVED_TEXT
@@ -265,9 +255,7 @@ class EMTrainingSession:
                             "comparison level was never observed in the training data."
                         )
                     else:
-                        orig_cl._add_trained_m_probability(
-                            cl.m_probability, training_desc
-                        )
+                        orig_cl._add_trained_m_probability(cl.m_probability, training_desc)
 
                 if "u" not in self.training_fixed_probabilities:
                     not_observed = LEVEL_NOT_OBSERVED_TEXT
@@ -280,16 +268,12 @@ class EMTrainingSession:
                             "comparison level was never observed in the training data."
                         )
                     else:
-                        orig_cl._add_trained_u_probability(
-                            cl.u_probability, training_desc
-                        )
+                        orig_cl._add_trained_u_probability(cl.u_probability, training_desc)
         return original_core_model_settings
 
     @property
     def _blocking_adjusted_probability_two_random_records_match(self):
-        orig_prop_m = (
-            self.original_core_model_settings.probability_two_random_records_match
-        )
+        orig_prop_m = self.original_core_model_settings.probability_two_random_records_match
 
         adj_bayes_factor = prob_to_bayes_factor(orig_prop_m)
 
@@ -322,9 +306,7 @@ class EMTrainingSession:
     def _iteration_history_records(self):
         output_records = []
 
-        for iteration, core_model_settings in enumerate(
-            self._core_model_settings_history
-        ):
+        for iteration, core_model_settings in enumerate(self._core_model_settings_history):
             records = core_model_settings.parameters_as_detailed_records
 
             for r in records:

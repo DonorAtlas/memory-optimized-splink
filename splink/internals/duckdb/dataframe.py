@@ -30,6 +30,14 @@ class DuckDBDataFrame(SplinkDataFrame):
 
         return [InputColumn(c, sqlglot_dialect_str="duckdb") for c in col_strings]
 
+    @property
+    def shape(self) -> tuple[int, int]:
+        sql = f"SELECT COUNT(*) FROM {self.physical_name}"
+        return (
+            self.db_api._execute_sql_against_backend(sql).fetchone()[0],
+            len(self.columns),
+        )
+
     def validate(self):
         pass
 

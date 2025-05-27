@@ -46,15 +46,16 @@ def _proportion_sample_size_link_only(
     # total valid links is sum of pairwise product of individual row counts
     # i.e. if frame_counts are [a, b, c, d, ...],
     # total_links = a*b + a*c + a*d + ... + b*c + b*d + ... + c*d + ...
+    logger.info(f"Row counts: {row_counts_individual_dfs}")
     total_links = (
-        sum(row_counts_individual_dfs) ** 2
-        - sum([count**2 for count in row_counts_individual_dfs])
+        sum(row_counts_individual_dfs) ** 2 - sum([count**2 for count in row_counts_individual_dfs])
     ) / 2
+    logger.info(f"Total links: {total_links}")
     total_nodes = sum(row_counts_individual_dfs)
-
+    logger.info(f"Total nodes: {total_nodes}")
     # if we scale each frame by a proportion total_links scales with the square
     # i.e. (our target) max_pairs == proportion^2 * total_links
-    proportion = (max_pairs / total_links) ** 0.5
+    proportion = (max_pairs / total_links) ** 0.5 if total_links > 0 else 0
     # sample size is for df_concat_with_tf, i.e. proportion of the total nodes
     sample_size = proportion * total_nodes
     return proportion, sample_size
@@ -97,6 +98,24 @@ def estimate_u_values(linker: Linker, max_pairs: float, seed: int = None) -> Non
         proportion = sample_size / total_nodes
 
     if settings_obj._link_type == "link_only":
+        # # -------
+        # new_pipeline = CTEPipeline()
+        # new_pipeline = enqueue_df_concat(linker, new_pipeline)
+
+        # sql = """
+        # SELECT * FROM __splink__df_concat LIMIT 0
+        # """
+        # new_pipeline.enqueue_sql(sql, "__splink__df_concat_schema")
+        # schema_df = db_api.sql_pipeline_to_splink_dataframe(new_pipeline)
+        # schema_results = db_api._execute_sql_against_backend(sql)
+        # column_names = (
+        #     [col[0] for col in schema_results.description] if hasattr(schema_results, "description") else []
+        # )
+        # logger.info(f"Columns in __splink__df_concat: {column_names}")
+        # schema_df.drop_table_from_database_and_remove_from_cache()
+        # # -------
+        # logger.info(f"Enqueuing SQL: {sql}")
+
         sql = """
         select count(source_dataset) as count
         from __splink__df_concat
@@ -108,9 +127,7 @@ def estimate_u_values(linker: Linker, max_pairs: float, seed: int = None) -> Non
         counts_dataframe.drop_table_from_database_and_remove_from_cache()
         frame_counts = [res["count"] for res in result]
 
-        proportion, sample_size = _proportion_sample_size_link_only(
-            frame_counts, max_pairs
-        )
+        proportion, sample_size = _proportion_sample_size_link_only(frame_counts, max_pairs)
 
         total_nodes = sum(frame_counts)
 
@@ -127,9 +144,7 @@ def estimate_u_values(linker: Linker, max_pairs: float, seed: int = None) -> Non
     # don't bother when we aren't using a seed as it is needless computation
     if seed is not None:
         uid_colname = settings_obj.column_info_settings.unique_id_input_column.name
-        table_to_sample_from = (
-            f"(select * from {table_to_sample_from} order by {uid_colname})"
-        )
+        table_to_sample_from = f"(select * from {table_to_sample_from} order by {uid_colname})"
 
     pipeline = CTEPipeline()
     pipeline = enqueue_df_concat(training_linker, pipeline)
@@ -159,10 +174,7 @@ def estimate_u_values(linker: Linker, max_pairs: float, seed: int = None) -> Non
     input_tablename_sample_l = "__splink__df_concat_sample"
     input_tablename_sample_r = "__splink__df_concat_sample"
 
-    if (
-        len(linker._input_tables_dict) == 2
-        and linker._settings_obj._link_type == "link_only"
-    ):
+    if len(linker._input_tables_dict) == 2 and linker._settings_obj._link_type == "link_only":
         sqls = split_df_concat_with_tf_into_two_tables_sqls(
             "__splink__df_concat",
             linker._settings_obj.column_info_settings.source_dataset_column_name,
@@ -218,9 +230,7 @@ def estimate_u_values(linker: Linker, max_pairs: float, seed: int = None) -> Non
     df_sample.drop_table_from_database_and_remove_from_cache()
 
     m_u_records = [
-        r
-        for r in param_records
-        if r["output_column_name"] != "_probability_two_random_records_match"
+        r for r in param_records if r["output_column_name"] != "_probability_two_random_records_match"
     ]
 
     m_u_records_lookup = m_u_records_to_lookup_dict(m_u_records)
