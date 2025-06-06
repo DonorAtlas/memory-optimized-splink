@@ -26,6 +26,10 @@ from splink.internals.settings import (
     TrainingSettings,
 )
 from splink.internals.vertically_concatenate import compute_df_concat_with_tf
+import sqlglot
+from splink.internals.unique_id_concat import (
+    _composite_unique_id_from_nodes_sql,
+)
 
 from .database_api import DatabaseAPISubClass
 from .exceptions import EMTrainingException
@@ -125,7 +129,7 @@ class EMTrainingSession:
                 comparisons=core_model_settings.comparisons,
                 retain_matching_columns=False,
                 additional_columns_to_retain=[],
-                needs_matchkey_column=False,
+                needs_matchkey_column=True,
             )
         )
 
@@ -162,12 +166,42 @@ class EMTrainingSession:
 
     def _comparison_vectors(self) -> SplinkDataFrame:
         self._training_log_message()
+        orig_settings = self._original_linker._settings_obj
+        join_key_col_name = f"__join_key_{orig_settings._cache_uid}"
+        join_key_col = _composite_unique_id_from_nodes_sql(
+            [
+                orig_settings.column_info_settings.unique_id_input_column,
+                orig_settings.column_info_settings.source_dataset_input_column,
+            ]
+        )
+
+        join_key_select = f"{join_key_col} as {join_key_col_name}"
+
+        blocking_rule_sql = self._blocking_rule_for_training.blocking_rule_sql
+        tree = sqlglot.parse_one(blocking_rule_sql)
+
+        column_names = list(
+            set(
+                [col.name for col in tree.find_all(sqlglot.exp.Column)]
+                + [
+                    orig_settings.column_info_settings.source_dataset_input_column.input_name,
+                    orig_settings.column_info_settings.unique_id_input_column.input_name,
+                    join_key_select,
+                ]
+            )
+        )
+        required_cols = ", ".join(column_names)
+        logger.info(f"required_cols: {required_cols}")
 
         pipeline = CTEPipeline()
+        logger.info("getting df concat with tf")
         nodes_with_tf = compute_df_concat_with_tf(self._original_linker, pipeline)
-        pipeline = CTEPipeline([nodes_with_tf])
+        pipeline = CTEPipeline()
+        pipeline.enqueue_sql(
+            f"select {required_cols} from {nodes_with_tf.physical_name}", "__splink__df_concat_with_tf"
+        )
+        df_tf_with_concat = self.db_api.sql_pipeline_to_splink_dataframe(pipeline)
 
-        orig_settings = self._original_linker._settings_obj
         sqls = block_using_rules_sqls(
             input_tablename_l="__splink__df_concat_with_tf",
             input_tablename_r="__splink__df_concat_with_tf",
@@ -175,7 +209,9 @@ class EMTrainingSession:
             link_type=orig_settings._link_type,
             source_dataset_input_column=orig_settings.column_info_settings.source_dataset_input_column,
             unique_id_input_column=orig_settings.column_info_settings.unique_id_input_column,
+            join_key_col_name=join_key_col_name,
         )
+        logger.info(f"Enqueuing sqls (block_using_rules_sqls): {sqls}")
         pipeline.enqueue_list_of_sqls(sqls)
 
         logger.info(f"Blocking pairs")
@@ -186,13 +222,26 @@ class EMTrainingSession:
         sqls = compute_comparison_vector_values_from_id_pairs_sqls(
             orig_settings._columns_to_select_for_blocking,
             self.columns_to_select_for_comparison_vector_values,
-            input_tablename_l="__splink__df_concat_with_tf",
-            input_tablename_r="__splink__df_concat_with_tf",
+            input_tablename_l=nodes_with_tf.physical_name,
+            input_tablename_r=nodes_with_tf.physical_name,
             source_dataset_input_column=orig_settings.column_info_settings.source_dataset_input_column,
             unique_id_input_column=orig_settings.column_info_settings.unique_id_input_column,
         )
 
-        pipeline.enqueue_list_of_sqls(sqls)
+        blocked_with_cols, comparison_metrics, __splink__df_comparison_vectors = None, None, None
+        tables: list[SplinkDataFrame | None] = [
+            blocked_with_cols,
+            comparison_metrics,
+            __splink__df_comparison_vectors,
+        ]
+        for i, sql in enumerate(sqls):
+            print(sql["sql"], sql["output_table_name"])
+            pipeline = CTEPipeline()
+            pipeline.enqueue_sql(sql["sql"], sql["output_table_name"])
+            tables[i] = self.db_api.sql_pipeline_to_splink_dataframe(pipeline)
+
+        logger.info(f"Enqueuing sqls (compute_comparison_vector_values_from_id_pairs_sqls): {sqls}")
+        # pipeline.enqueue_list_of_sqls(sqls)
         logger.info(f"Computing comparison vector values")
         return self.db_api.sql_pipeline_to_splink_dataframe(pipeline)
 

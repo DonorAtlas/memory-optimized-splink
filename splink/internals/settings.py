@@ -245,9 +245,7 @@ class Settings:
         )
 
         self._retain_matching_columns = retain_matching_columns
-        self._retain_intermediate_calculation_columns = (
-            retain_intermediate_calculation_columns
-        )
+        self._retain_intermediate_calculation_columns = retain_intermediate_calculation_columns
 
         # TODO: do we need to convert?
         self._blocking_rules_to_generate_predictions = self._brs_as_objs(
@@ -302,14 +300,9 @@ class Settings:
             # Want to add any columns not already by the model
             used_by_brs = []
             for br in self._blocking_rules_to_generate_predictions:
-                used_by_brs.extend(
-                    get_columns_used_from_sql(br.blocking_rule_sql, br.sqlglot_dialect)
-                )
+                used_by_brs.extend(get_columns_used_from_sql(br.blocking_rule_sql, br.sqlglot_dialect))
 
-            used_by_brs = [
-                InputColumn(c, sqlglot_dialect_str=self._sqlglot_dialect)
-                for c in used_by_brs
-            ]
+            used_by_brs = [InputColumn(c, sqlglot_dialect_str=self._sqlglot_dialect) for c in used_by_brs]
 
             used_by_brs = [c.unquote().name for c in used_by_brs]
             already_used_names = self._columns_used_by_comparisons
@@ -408,22 +401,23 @@ class Settings:
         cols = []
 
         for uid_col in unique_id_input_columns:
+            logger.info(f"uid_col: {uid_col.names_l_r}")
             cols.extend(uid_col.names_l_r)
 
         for cc in comparisons:
-            cols.extend(
-                cc._columns_to_select_for_comparison_vector_values(
-                    retain_matching_columns
-                )
-            )
+            logger.info(f"cc: {cc._columns_to_select_for_comparison_vector_values(retain_matching_columns)}")
+            cols.extend(cc._columns_to_select_for_comparison_vector_values(retain_matching_columns))
 
         for add_col in additional_columns_to_retain:
+            logger.info(f"add_col: {add_col.names_l_r}")
             cols.extend(add_col.names_l_r)
 
         if needs_matchkey_column:
+            logger.info("match_key")
             cols.append("match_key")
 
         cols = dedupe_preserving_order(cols)
+        logger.info(f"cols: {cols}")
         return cols
 
     @staticmethod
@@ -494,9 +488,7 @@ class Settings:
     def _get_comparison_by_output_column_name(self, name: str) -> Comparison:
         return self.core_model_settings.get_comparison_by_output_column_name(name)
 
-    def _brs_as_objs(
-        self, brs_as_strings: Sequence[str | BlockingRule]
-    ) -> List[BlockingRule]:
+    def _brs_as_objs(self, brs_as_strings: Sequence[str | BlockingRule]) -> List[BlockingRule]:
         brs_as_objs = [blocking_rule_to_obj(br) for br in brs_as_strings]
         for n, br in enumerate(brs_as_objs):
             br.add_preceding_rules(brs_as_objs[:n])
@@ -543,9 +535,7 @@ class Settings:
         # So for example, if we have a param estimate for exact match on first name AND
         # surname, prefer that
         # over individual estimtes for exact match first name and surname.
-        exact_comparison_levels.sort(
-            key=lambda x: -len(x["level"]._exact_match_colnames)
-        )
+        exact_comparison_levels.sort(key=lambda x: -len(x["level"]._exact_match_colnames))
 
         comparison_levels_corresponding_to_blocking_rule = []
         for level_info in exact_comparison_levels:
@@ -575,13 +565,9 @@ class Settings:
     def _simple_dict_entries(self) -> dict[str, Any]:
         return {
             "link_type": self._link_type,
-            "probability_two_random_records_match": (
-                self._probability_two_random_records_match
-            ),
+            "probability_two_random_records_match": (self._probability_two_random_records_match),
             "retain_matching_columns": self._retain_matching_columns,
-            "retain_intermediate_calculation_columns": (
-                self._retain_intermediate_calculation_columns
-            ),
+            "retain_intermediate_calculation_columns": (self._retain_intermediate_calculation_columns),
             "additional_columns_to_retain": self._additional_col_names_to_retain,
             "sql_dialect": self._sql_dialect_str,
             "linker_uid": self._cache_uid,
@@ -609,9 +595,7 @@ class Settings:
     def _as_completed_dict(self):
         brs = self._blocking_rules_to_generate_predictions
         current_settings = {
-            "blocking_rules_to_generate_predictions": [
-                br._as_completed_dict() for br in brs
-            ],
+            "blocking_rules_to_generate_predictions": [br._as_completed_dict() for br in brs],
             "comparisons": [cc._as_completed_dict() for cc in self.comparisons],
         }
         return {
@@ -678,9 +662,7 @@ class Settings:
 
     @property
     def human_readable_description(self):
-        comparison_descs = [
-            c._human_readable_description_succinct for c in self.comparisons
-        ]
+        comparison_descs = [c._human_readable_description_succinct for c in self.comparisons]
         comparison_desc_str = "\n".join(comparison_descs)
         desc = (
             "SUMMARY OF LINKING MODEL\n"

@@ -4,6 +4,7 @@ import logging
 from typing import List, Optional
 
 from splink.internals.input_column import InputColumn
+from splink.internals.pipeline import CTEPipeline
 from splink.internals.unique_id_concat import _composite_unique_id_from_nodes_sql
 
 logger = logging.getLogger(__name__)
@@ -67,7 +68,9 @@ def compute_comparison_vector_values_from_id_pairs_sqls(
     # using the __splink__blocked_id_pairs as an associated (junction) table
 
     # That is, it does the join, but doesn't compute the comparison vectors
-    sql = sql = f"""
+    sql = (
+        sql
+    ) = f"""
     select {select_cols_expr}, b.match_key
     from {input_tablename_l} as l
     inner join __splink__blocked_id_pairs as b
@@ -75,7 +78,6 @@ def compute_comparison_vector_values_from_id_pairs_sqls(
     inner join {input_tablename_r} as r
     on {uid_r_expr} = b.join_key_r
     """
-
     sqls.append({"sql": sql, "output_table_name": "blocked_with_cols"})
 
     select_cols_expr = ", \n".join(columns_to_select_for_comparison_vector_values)
@@ -91,6 +93,7 @@ def compute_comparison_vector_values_from_id_pairs_sqls(
     from blocked_with_cols
     """
 
+    sqls.append({"sql": sql, "output_table_name": "comparison_metrics"})
     sqls.append({"sql": sql, "output_table_name": "__splink__df_comparison_vectors"})
 
     return sqls
