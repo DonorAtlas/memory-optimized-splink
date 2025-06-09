@@ -226,6 +226,7 @@ class EMTrainingSession:
 
         logger.info(f"Blocking pairs")
         blocked_pairs = self.db_api.sql_pipeline_to_splink_dataframe(pipeline)
+        self.db_api.delete_table_from_database(nodes_with_tf_select_cols.physical_name)
 
         # Generate blocked candidates
         pipeline = CTEPipeline()
@@ -240,6 +241,7 @@ class EMTrainingSession:
         pipeline.enqueue_sql(blocked_candidates_sql, "__splink__df_blocked_candidates")
         logger.info(f"Computing blocked candidates")
         blocked_candidates = self.db_api.sql_pipeline_to_splink_dataframe(pipeline)
+        self.db_api.delete_table_from_database(blocked_pairs.physical_name)
 
         # Generate comparison metrics
         pipeline = CTEPipeline()
@@ -255,6 +257,7 @@ class EMTrainingSession:
         pipeline.enqueue_sql(comparison_metrics_sql, "__splink__df_comparison_metrics")
         logger.info(f"Computing comparison metrics")
         comparison_metrics = self.db_api.sql_pipeline_to_splink_dataframe(pipeline)
+        self.db_api.delete_table_from_database(blocked_candidates.physical_name)
 
         # Generate comparison vectors
         pipeline = CTEPipeline()
@@ -269,15 +272,14 @@ class EMTrainingSession:
         )
         pipeline.enqueue_sql(comparison_vectors_sql, "__splink__df_comparison_vectors")
         logger.info(f"Computing comparison vector values")
-        return self.db_api.sql_pipeline_to_splink_dataframe(pipeline)
+        comparison_vectors = self.db_api.sql_pipeline_to_splink_dataframe(pipeline)
+        self.db_api.delete_table_from_database(comparison_metrics.physical_name)
+        return comparison_vectors
 
     def _train(self, cvv: SplinkDataFrame = None) -> CoreModelSettings:
         if cvv is None:
             logger.info("Computing comparison vector values")
             cvv = self._comparison_vectors()
-            res = self.db_api._execute_sql_against_backend(
-                f"SELECT column_name FROM information_schema.columns WHERE table_name = '{cvv.physical_name}'"
-            )
 
         # check that the blocking rule actually generates _some_ record pairs,
         # if not give the user a helpful message
