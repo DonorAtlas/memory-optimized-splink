@@ -651,10 +651,21 @@ def materialise_exploded_id_tables(
 
 
 def _sql_gen_where_condition(
-    link_type: backend_link_type_options, unique_id_cols: List[InputColumn], exclude_sql: str | None = None
+    link_type: backend_link_type_options,
+    unique_id_cols: List[InputColumn],
+    exclude_sql: str | None = None,
+    join_key_col_name: str | None = None,
 ) -> str:
-    id_expr_l = _composite_unique_id_from_nodes_sql(unique_id_cols, "l")
-    id_expr_r = _composite_unique_id_from_nodes_sql(unique_id_cols, "r")
+    id_expr_l = (
+        f"l.{join_key_col_name}"
+        if join_key_col_name
+        else _composite_unique_id_from_nodes_sql(unique_id_cols, "l")
+    )
+    id_expr_r = (
+        f"r.{join_key_col_name}"
+        if join_key_col_name
+        else _composite_unique_id_from_nodes_sql(unique_id_cols, "r")
+    )
     id_expr_ex = _composite_unique_id_from_edges_sql(unique_id_cols, "l", "ex")
 
     if link_type in ("two_dataset_link_only", "self_link"):
@@ -681,6 +692,7 @@ def block_using_rules_sqls(
     link_type: "LinkTypeLiteralType",
     source_dataset_input_column: Optional[InputColumn],
     unique_id_input_column: InputColumn,
+    join_key_col_name: str | None = None,
 ) -> list[dict[str, str]]:
     """Use the blocking rules specified in the linker's settings object to
     generate a SQL statement that will create pairwise record comparions
@@ -696,8 +708,9 @@ def block_using_rules_sqls(
         source_dataset_input_column, unique_id_input_column
     )
 
-    where_condition = _sql_gen_where_condition(link_type, unique_id_input_columns)
-
+    where_condition = _sql_gen_where_condition(
+        link_type, unique_id_input_columns, join_key_col_name=join_key_col_name
+    )
     # Cover the case where there are no blocking rules
     # This is a bit of a hack where if you do a self-join on 'true'
     # you create a cartesian product, rather than having separate code

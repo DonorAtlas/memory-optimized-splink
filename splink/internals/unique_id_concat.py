@@ -6,7 +6,7 @@ CONCAT_SEPARATOR = "-__-"
 
 
 def _composite_unique_id_from_nodes_sql(
-    unique_id_cols: list[InputColumn], table_prefix: str | None = None
+    unique_id_cols: list[InputColumn | str], table_prefix: str | None = None
 ) -> str:
     """
     Returns:
@@ -17,7 +17,7 @@ def _composite_unique_id_from_nodes_sql(
     else:
         table_prefix = ""
 
-    cols = [f"{table_prefix}{c.name}" for c in unique_id_cols]
+    cols = [f"{table_prefix}{c.name if isinstance(c, InputColumn) else c}" for c in unique_id_cols]
 
     return f" || '{CONCAT_SEPARATOR}' || ".join(cols)
 

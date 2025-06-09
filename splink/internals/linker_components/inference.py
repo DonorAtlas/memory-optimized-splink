@@ -13,13 +13,18 @@ from splink.internals.blocking import (
 from splink.internals.blocking_rule_creator import BlockingRuleCreator
 from splink.internals.blocking_rule_creator_utils import to_blocking_rule_creator
 from splink.internals.comparison_vector_values import (
+    compute_blocked_candidates_from_id_pairs_sql,
+    compute_comparison_metrics_from_blocked_candidates_sql,
     compute_comparison_vector_values_from_id_pairs_sqls,
+    compute_comparison_vectors_from_comparison_metrics_sql,
 )
 from splink.internals.database_api import AcceptableInputTableType
 from splink.internals.find_matches_to_new_records import (
     add_unique_id_and_source_dataset_cols_if_needed,
 )
+from splink.internals.input_column import InputColumn
 from splink.internals.misc import ascii_uid, ensure_is_list
+from splink.internals.parse_sql import get_columns_used_from_sql
 from splink.internals.pipeline import CTEPipeline
 from splink.internals.predict import predict_from_comparison_vectors_sqls_using_settings
 from splink.internals.splink_dataframe import SplinkDataFrame
@@ -27,7 +32,10 @@ from splink.internals.term_frequencies import (
     _join_new_table_to_df_concat_with_tf_sql,
     colname_to_tf_tablename,
 )
-from splink.internals.unique_id_concat import _composite_unique_id_from_edges_sql
+from splink.internals.unique_id_concat import (
+    _composite_unique_id_from_edges_sql,
+    _composite_unique_id_from_nodes_sql,
+)
 from splink.internals.vertically_concatenate import (
     compute_df_concat_with_tf,
     enqueue_df_concat_with_tf,
@@ -248,16 +256,8 @@ class LinkerInference:
             logger.info(f"Blocking time: {blocking_time:.2f} seconds")
             start_time = time.time()
 
-        sqls = compute_comparison_vector_values_from_id_pairs_sqls(
-            self._linker._settings_obj._columns_to_select_for_blocking,
-            self._linker._settings_obj._columns_to_select_for_comparison_vector_values,
-            input_tablename_l="__splink__df_concat_with_tf",
-            input_tablename_r="__splink__df_concat_with_tf",
-            source_dataset_input_column=self._linker._settings_obj.column_info_settings.source_dataset_input_column,
-            unique_id_input_column=self._linker._settings_obj.column_info_settings.unique_id_input_column,
-        )
-        pipeline.enqueue_list_of_sqls(sqls)
-
+        df_comparison_vectors = self._comparison_vectors()
+        pipeline = CTEPipeline([df_comparison_vectors, df_concat_with_tf])
         sqls = predict_from_comparison_vectors_sqls_using_settings(
             self._linker._settings_obj,
             threshold_match_probability,
@@ -575,17 +575,9 @@ class LinkerInference:
             out_tablename="__splink__df_new_records_with_tf",
         )
 
-        sqls = compute_comparison_vector_values_from_id_pairs_sqls(
-            self._linker._settings_obj._columns_to_select_for_blocking,
-            self._linker._settings_obj._columns_to_select_for_comparison_vector_values,
-            input_tablename_l="__splink__df_concat_with_tf",
-            input_tablename_r="__splink__df_new_records_with_tf",
-            source_dataset_input_column=settings.column_info_settings.source_dataset_input_column,
-            unique_id_input_column=settings.column_info_settings.unique_id_input_column,
-        )
+        df_comparison_vectors = self._comparison_vectors()
 
-        pipeline.enqueue_list_of_sqls(sqls)
-
+        pipeline = CTEPipeline([df_comparison_vectors, new_records_df])
         sqls = predict_from_comparison_vectors_sqls_using_settings(
             self._linker._settings_obj,
             sql_infinity_expression=self._linker._infinity_expression,
@@ -799,3 +791,108 @@ class LinkerInference:
         )
 
         return predictions
+
+    def _comparison_vectors(self) -> SplinkDataFrame:
+        pipeline = CTEPipeline()
+        nodes_with_tf = compute_df_concat_with_tf(self._linker, pipeline)
+
+        settings = self._linker._settings_obj
+        source_dataset_input_column = settings.column_info_settings.source_dataset_input_column
+        unique_id_input_column = settings.column_info_settings.unique_id_input_column
+        unique_id_cols: list[InputColumn] = [unique_id_input_column]
+        if source_dataset_input_column:
+            unique_id_cols.append(source_dataset_input_column)
+        else:
+            unique_id_cols.append(
+                InputColumn(
+                    raw_column_name_or_column_reference="source_dataset",
+                    sqlglot_dialect_str=self._linker._db_api.sql_dialect.sqlglot_dialect,
+                )
+            )
+
+        join_key_col_name = f"__join_key_{settings._cache_uid}"
+        join_key_col = _composite_unique_id_from_nodes_sql(unique_id_cols)
+        join_key_select = f"{join_key_col} as {join_key_col_name}"
+
+        blocking_rule_sql = self._linker._settings_obj._blocking_rules_to_generate_predictions[
+            0
+        ].blocking_rule_sql
+        cols_used_from_br_sql = get_columns_used_from_sql(
+            blocking_rule_sql, sqlglot_dialect=self._linker._db_api.sql_dialect.sqlglot_dialect
+        )
+        column_names = list(
+            set(
+                cols_used_from_br_sql
+                + [
+                    *[col.input_name for col in unique_id_cols if col is not None],
+                    join_key_select,
+                ]
+            )
+        )
+        required_cols = ", ".join(column_names)
+
+        pipeline = CTEPipeline()
+        sql = f"SELECT {required_cols} FROM {nodes_with_tf.physical_name}"
+        pipeline.enqueue_sql(sql, "__splink__df_concat_with_tf_select_cols")
+        nodes_with_tf_select_cols = self._linker._db_api.sql_pipeline_to_splink_dataframe(pipeline)
+
+        pipeline = CTEPipeline()
+        sqls = block_using_rules_sqls(
+            input_tablename_l=nodes_with_tf_select_cols.physical_name,
+            input_tablename_r=nodes_with_tf_select_cols.physical_name,
+            blocking_rules=[self._linker._settings_obj._blocking_rules_to_generate_predictions[0]],
+            link_type=settings._link_type,
+            source_dataset_input_column=settings.column_info_settings.source_dataset_input_column,
+            unique_id_input_column=settings.column_info_settings.unique_id_input_column,
+            join_key_col_name=join_key_col_name,
+        )
+        pipeline.enqueue_list_of_sqls(sqls)
+
+        logger.info(f"Blocking pairs")
+        blocked_pairs = self._linker._db_api.sql_pipeline_to_splink_dataframe(pipeline)
+
+        # pipeline = CTEPipeline([blocked_pairs, nodes_with_tf])
+
+        # Generate blocked candidates
+        pipeline = CTEPipeline()
+        blocked_candidates_sql = compute_blocked_candidates_from_id_pairs_sql(
+            settings._columns_to_select_for_blocking,
+            blocked_pairs_table_name=blocked_pairs.physical_name,
+            df_concat_with_tf_table_name=nodes_with_tf.physical_name,
+            source_dataset_input_column=source_dataset_input_column,
+            unique_id_input_column=unique_id_input_column,
+        )
+
+        pipeline.enqueue_sql(blocked_candidates_sql, "__splink__df_blocked_candidates")
+        logger.info(f"Computing blocked candidates")
+        blocked_candidates = self._linker._db_api.sql_pipeline_to_splink_dataframe(pipeline)
+
+        # Generate comparison metrics
+        pipeline = CTEPipeline()
+        logger.info("Generating comparison metrics")
+        comparison_metrics_sql = compute_comparison_metrics_from_blocked_candidates_sql(
+            unique_id_input_columns=unique_id_cols,
+            comparisons=settings.comparisons,
+            retain_matching_columns=False,
+            additional_columns_to_retain=[],
+            needs_matchkey_column=True,
+            blocked_candidates_table_name=blocked_candidates.physical_name,
+        )
+        pipeline.enqueue_sql(comparison_metrics_sql, "__splink__df_comparison_metrics")
+        logger.info(f"Computing comparison metrics")
+        comparison_metrics = self._linker._db_api.sql_pipeline_to_splink_dataframe(pipeline)
+
+        # Generate comparison vectors
+        pipeline = CTEPipeline()
+        logger.info("Generating comparison vectors")
+        comparison_vectors_sql = compute_comparison_vectors_from_comparison_metrics_sql(
+            comparison_metrics_table_name=comparison_metrics.physical_name,
+            unique_id_input_columns=unique_id_cols,
+            comparisons=settings.comparisons,
+            retain_matching_columns=False,
+            additional_columns_to_retain=[],
+            needs_matchkey_column=True,
+        )
+        pipeline.enqueue_sql(comparison_vectors_sql, "__splink__df_comparison_vectors")
+        logger.info(f"Computing comparison vector values")
+        return self._linker._db_api.sql_pipeline_to_splink_dataframe(pipeline)

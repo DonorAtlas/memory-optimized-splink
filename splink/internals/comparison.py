@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import logging
 import re
 from typing import TYPE_CHECKING, Any, List, Optional
 
+from splink.internals.input_column import InputColumn
 from splink.internals.misc import (
     dedupe_preserving_order,
     join_list_with_commas_final_and,
@@ -13,6 +15,8 @@ from .comparison_level import ComparisonLevel, _default_m_values, _default_u_val
 # https://stackoverflow.com/questions/39740632/python-type-hinting-without-cyclic-imports
 if TYPE_CHECKING:
     from splink.internals.settings import ColumnInfoSettings
+
+logger = logging.getLogger(__name__)
 
 
 class Comparison:
@@ -68,9 +72,7 @@ class Comparison:
         column_info_settings: ColumnInfoSettings = None,
     ):
         comparison_levels_as_objs: list[ComparisonLevel] = [
-            ComparisonLevel(**cl, sqlglot_dialect=sqlglot_dialect)
-            if isinstance(cl, dict)
-            else cl
+            ComparisonLevel(**cl, sqlglot_dialect=sqlglot_dialect) if isinstance(cl, dict) else cl
             for cl in comparison_levels
         ]
         self.comparison_levels: list[ComparisonLevel] = comparison_levels_as_objs
@@ -78,12 +80,8 @@ class Comparison:
         self._column_info_settings: Optional[ColumnInfoSettings] = column_info_settings
 
         self.sqlglot_dialect = sqlglot_dialect
-        self.output_column_name = (
-            output_column_name or self._default_output_column_name()
-        )
-        self.comparison_description = (
-            comparison_description or self._default_comparison_description()
-        )
+        self.output_column_name = output_column_name or self._default_output_column_name()
+        self.comparison_description = comparison_description or self._default_comparison_description()
 
         # Assign comparison vector values starting at highest level, count down to 0
         num_levels = self._num_levels
@@ -102,12 +100,8 @@ class Comparison:
                 else:
                     level._max_level = False
                 counter -= 1
-            level.default_m_probability = default_m_values[
-                level.comparison_vector_value
-            ]
-            level.default_u_probability = default_u_values[
-                level.comparison_vector_value
-            ]
+            level.default_m_probability = default_m_values[level.comparison_vector_value]
+            level.default_u_probability = default_u_values[level.comparison_vector_value]
 
     @property
     def _num_levels(self):
@@ -153,9 +147,7 @@ class Comparison:
 
     @property
     def _case_statement(self):
-        sqls = [
-            cl._when_then_comparison_vector_value_sql for cl in self.comparison_levels
-        ]
+        sqls = [cl._when_then_comparison_vector_value_sql for cl in self.comparison_levels]
         sql = " ".join(sqls)
         sql = f"CASE {sql} END as {self._gamma_column_name}"
 
@@ -247,10 +239,7 @@ class Comparison:
                     output_cols.extend(col.tf_name_l_r)
 
         # Bayes factor case when statement
-        sqls = [
-            cl._bayes_factor_sql(self._gamma_column_name)
-            for cl in self.comparison_levels
-        ]
+        sqls = [cl._bayes_factor_sql(self._gamma_column_name) for cl in self.comparison_levels]
         sql = " ".join(sqls)
         sql = f"CASE {sql} END as {self._bf_column_name} "
         output_cols.append(sql)
@@ -297,6 +286,105 @@ class Comparison:
 
         return dedupe_preserving_order(output_cols)
 
+    def _columns_to_select_for_em_metrics(
+        self,
+        retain_matching_columns: bool,
+    ) -> list[str]:
+        input_cols: list[InputColumn] = []
+        for cl in self.comparison_levels:
+            input_cols.extend(cl._input_columns_used_by_sql_condition)
+
+        output_cols: list[str] = []
+        if retain_matching_columns:
+            for col in input_cols:
+                output_cols.extend(col.names_l_r)
+
+        for cl in self.comparison_levels:
+            if cl._is_else_level:
+                continue
+
+            if cl._is_null_level:
+                output_cols.extend(
+                    [
+                        col_name
+                        for col in cl._input_columns_used_by_sql_condition
+                        for col_name in col.names_l_r
+                    ]
+                )
+                continue
+
+            # handle complex expressions
+            mapping, _ = cl.parsed_sql_condition
+
+            if len(mapping) > 0:
+                output_cols.extend([f"{expr} as {var}" for var, expr in mapping.items()])
+            else:
+                output_cols.extend(
+                    [
+                        col_name
+                        for col in cl._input_columns_used_by_sql_condition
+                        for col_name in col.names_l_r
+                    ]
+                )
+
+        for cl in self.comparison_levels:
+            if cl._has_tf_adjustments:
+                col = cl._tf_adjustment_input_column
+                output_cols.extend(col.tf_name_l_r)
+
+        return dedupe_preserving_order(output_cols)
+
+    def _columns_to_select_for_cv_from_metrics(
+        self,
+        retain_matching_columns: bool,
+    ) -> List[str]:
+        output_cols = []
+        if retain_matching_columns:
+            for cl in self.comparison_levels:
+                output_cols.extend(
+                    [
+                        col_name
+                        for col in cl._input_columns_used_by_sql_condition
+                        for col_name in col.names_l_r
+                    ]
+                )
+
+        for cl in self.comparison_levels:
+            if cl._has_tf_adjustments:
+                col = cl._tf_adjustment_input_column
+                output_cols.extend(col.tf_name_l_r)
+
+        cl_cols: list[str] = []
+        for cl in self.comparison_levels:
+            if cl._is_else_level:
+                continue
+            elif cl._is_null_level:
+                output_cols.extend(
+                    [
+                        col_name
+                        for col in cl._input_columns_used_by_sql_condition
+                        for col_name in col.names_l_r
+                    ]
+                )
+                cl_cols.append(f"WHEN {cl.sql_condition} THEN {cl.comparison_vector_value}")
+            else:
+                mapping, expr = cl.parsed_sql_condition
+                if len(mapping) > 0:
+                    cl_cols.append(f"WHEN {expr} THEN {cl.comparison_vector_value}")
+                else:
+                    output_cols.extend(
+                        [
+                            col_name
+                            for col in cl._input_columns_used_by_sql_condition
+                            for col_name in col.names_l_r
+                        ]
+                    )
+
+        if len(cl_cols) > 0:
+            output_cols.append(f"CASE {' '.join(cl_cols)} ELSE 0 END as {self._gamma_column_name}")
+
+        return dedupe_preserving_order(output_cols)
+
     @property
     def _match_weight_columns_to_multiply(self):
         cols = []
@@ -316,9 +404,7 @@ class Comparison:
     def _as_completed_dict(self):
         return {
             "column_name": self.output_column_name,
-            "comparison_levels": [
-                cl._as_completed_dict() for cl in self.comparison_levels
-            ],
+            "comparison_levels": [cl._as_completed_dict() for cl in self.comparison_levels],
             "input_columns_used_by_case_statement": [
                 c.input_name for c in self._input_columns_used_by_case_statement
             ],
@@ -389,18 +475,14 @@ class Comparison:
     def _parameter_estimates_as_records(self):
         records = []
         for cl in self.comparison_levels:
-            new_records = cl._parameter_estimates_as_records(
-                self._num_levels, self.comparison_levels
-            )
+            new_records = cl._parameter_estimates_as_records(self._num_levels, self.comparison_levels)
             for r in new_records:
                 r["comparison_name"] = self.output_column_name
             records.extend(new_records)
 
         return records
 
-    def _get_comparison_level_by_comparison_vector_value(
-        self, value: int
-    ) -> ComparisonLevel:
+    def _get_comparison_level_by_comparison_vector_value(self, value: int) -> ComparisonLevel:
         for cl in self.comparison_levels:
             if cl.comparison_vector_value == value:
                 return cl

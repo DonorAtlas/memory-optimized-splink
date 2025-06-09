@@ -41,9 +41,7 @@ def count_agreement_patterns_sql(comparisons: List[Comparison]) -> str:
     return sql
 
 
-def compute_new_parameters_sql(
-    estimate_without_term_frequencies: bool, comparisons: List[Comparison]
-) -> str:
+def compute_new_parameters_sql(estimate_without_term_frequencies: bool, comparisons: List[Comparison]) -> str:
     """compute m and u counts from the results of predict"""
     if estimate_without_term_frequencies:
         agreement_pattern_count = "agreement_pattern_count"
@@ -125,20 +123,14 @@ def compute_proportions_for_new_parameters_pandas(
     u_prob = "u_probability"
     data.rename(columns={"m_count": m_prob, "u_count": u_prob}, inplace=True)
 
-    random_records = data[
-        data.output_column_name == "_probability_two_random_records_match"
-    ]
+    random_records = data[data.output_column_name == "_probability_two_random_records_match"]
     data = data[data.output_column_name != "_probability_two_random_records_match"]
 
     data = data[data.comparison_vector_value != -1]
     index = data.index.tolist()
 
-    m_probs = data.loc[index, m_prob] / data.groupby("output_column_name")[
-        m_prob
-    ].transform("sum")
-    u_probs = data.loc[index, u_prob] / data.groupby("output_column_name")[
-        u_prob
-    ].transform("sum")
+    m_probs = data.loc[index, m_prob] / data.groupby("output_column_name")[m_prob].transform("sum")
+    u_probs = data.loc[index, u_prob] / data.groupby("output_column_name")[u_prob].transform("sum")
 
     data.loc[index, m_prob] = m_probs
     data.loc[index, u_prob] = u_probs
@@ -171,9 +163,9 @@ def populate_m_u_from_lookup(
 
     if not cl._fix_m_probability and "m" not in training_fixed_probabilities:
         try:
-            m_probability = m_u_records_lookup[output_column_name][
-                cl.comparison_vector_value
-            ]["m_probability"]
+            m_probability = m_u_records_lookup[output_column_name][cl.comparison_vector_value][
+                "m_probability"
+            ]
 
         except KeyError:
             m_probability = LEVEL_NOT_OBSERVED_TEXT
@@ -190,9 +182,9 @@ def populate_m_u_from_lookup(
 
     if not cl._fix_u_probability and "u" not in training_fixed_probabilities:
         try:
-            u_probability = m_u_records_lookup[output_column_name][
-                cl.comparison_vector_value
-            ]["u_probability"]
+            u_probability = m_u_records_lookup[output_column_name][cl.comparison_vector_value][
+                "u_probability"
+            ]
 
         except KeyError:
             u_probability = LEVEL_NOT_OBSERVED_TEXT
@@ -225,9 +217,7 @@ def maximisation_step(
             m_u_records.append(r)
 
     if "lambda" not in training_fixed_probabilities:
-        core_model_settings.probability_two_random_records_match = prop_record[
-            "m_probability"
-        ]
+        core_model_settings.probability_two_random_records_match = prop_record["m_probability"]
 
     m_u_records_lookup = m_u_records_to_lookup_dict(m_u_records)
     for cc in core_model_settings.comparisons:
@@ -274,9 +264,7 @@ def expectation_maximisation(
 
     for i in range(1, max_iterations + 1):
         pipeline = CTEPipeline()
-        probability_two_random_records_match = (
-            core_model_settings.probability_two_random_records_match
-        )
+        probability_two_random_records_match = core_model_settings.probability_two_random_records_match
         start_time = time.time()
 
         # Expectation step
@@ -320,9 +308,7 @@ def expectation_maximisation(
         )
         core_model_settings_history.append(core_model_settings)
 
-        max_change_dict = _max_change_in_parameters_comparison_levels(
-            core_model_settings_history
-        )
+        max_change_dict = _max_change_in_parameters_comparison_levels(core_model_settings_history)
         logger.info(f"Iteration {i}: {max_change_dict['message']}")
         end_time = time.time()
         logger.log(15, f"    Iteration time: {end_time - start_time} seconds")
@@ -339,8 +325,7 @@ def _max_change_message(max_change_dict):
 
     if max_change_dict["max_change_type"] == "probability_two_random_records_match":
         message = (
-            f"{message} {max_change_dict['max_change_value']:,.3g} in "
-            "probability_two_random_records_match"
+            f"{message} {max_change_dict['max_change_value']:,.3g} in " "probability_two_random_records_match"
         )
     else:
         cl = max_change_dict["current_comparison_level"]
@@ -350,10 +335,7 @@ def _max_change_message(max_change_dict):
         cl_label = cl.label_for_charts
         level_text = f"{cc_name}, level `{cl_label}`"
 
-        message = (
-            f"{message} {max_change_dict['max_change_value']:,.3g} in "
-            f"the {m_u} of {level_text}"
-        )
+        message = f"{message} {max_change_dict['max_change_value']:,.3g} in " f"the {m_u} of {level_text}"
 
     return message
 
@@ -390,9 +372,7 @@ def _max_change_in_parameters_comparison_levels(
             change_u = this_u_prob - prev_u_prob
 
             change = max(abs(change_m), abs(change_u))
-            change_type = (
-                "m_probability" if abs(change_m) > abs(change_u) else "u_probability"
-            )
+            change_type = "m_probability" if abs(change_m) > abs(change_u) else "u_probability"
             change_value = change_m if abs(change_m) > abs(change_u) else change_u
             if change > max_change:
                 max_change = change
@@ -413,12 +393,8 @@ def _max_change_in_parameters_comparison_levels(
         max_change_levels["prev_comparison_level"] = None
         max_change_levels["current_comparison_level"] = None
         max_change_levels["max_change_type"] = "probability_two_random_records_match"
-        max_change_levels["max_change_value"] = (
-            change_probability_two_random_records_match
-        )
-        max_change_levels["max_abs_change_value"] = abs(
-            change_probability_two_random_records_match
-        )
+        max_change_levels["max_change_value"] = change_probability_two_random_records_match
+        max_change_levels["max_abs_change_value"] = abs(change_probability_two_random_records_match)
 
     max_change_levels["message"] = _max_change_message(max_change_levels)
 

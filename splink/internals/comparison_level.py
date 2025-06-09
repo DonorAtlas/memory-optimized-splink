@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import logging
 import math
 import re
@@ -54,9 +55,7 @@ def _exact_match_colname(sql_syntax_tree):
     cols = [c[:-2] for c in cols]  # Remove _l and _r
     cols = list(set(cols))
     if len(cols) != 1:
-        raise ValueError(
-            f"Expected sql condition to refer to one column but got {cols}"
-        )
+        raise ValueError(f"Expected sql condition to refer to one column but got {cols}")
     return cols[0]
 
 
@@ -192,6 +191,35 @@ class ComparisonLevel:
         return self._sql_condition
 
     @property
+    def parsed_sql_condition(self):
+        expression = sqlglot.parse_one(self.sql_condition)
+
+        mapping = {}
+        counter = [0]
+
+        def replace_complex_expressions(expr):
+            # If it's a complex expression (function, lambda, case, etc.)
+            if isinstance(
+                expr, (sqlglot.exp.Anonymous, sqlglot.exp.Case, sqlglot.exp.Lambda, sqlglot.exp.Reduce)
+            ):
+                expr_str = expr.sql(dialect="duckdb")  # Ensure consistent dialect
+                # Using a deterministic hash based on the expression string
+                # This ensures the same expression always gets the same hash
+                hash_id = hashlib.md5(expr_str.encode()).hexdigest()[:8]
+                col_name = f"__{'_'.join(sorted([col.input_name for col in self._input_columns_used_by_sql_condition]))}_{counter[0]}_{hash_id}"
+                counter[0] += 1
+                mapping[col_name] = expr_str
+                return sqlglot.exp.Identifier(this=col_name)
+            return expr
+
+        # Replace all nested expressions
+        simplified_expr = expression.transform(replace_complex_expressions)
+
+        # If no complex expressions were found, mapping will be empty and simplified_expr
+        # will be the original SQL condition
+        return mapping, simplified_expr.sql(dialect="duckdb")
+
+    @property
     def _tf_adjustment_input_column(self):
         val = self._tf_adjustment_column
         if val:
@@ -246,9 +274,7 @@ class ComparisonLevel:
             return ""
         if self.m_probability is not None:
             percentage = self.m_probability * 100
-            one_in_n = (
-                1 / self.m_probability if self.m_probability > 0 else float("inf")
-            )
+            one_in_n = 1 / self.m_probability if self.m_probability > 0 else float("inf")
             return (
                 "Amongst matching record comparisons, "
                 f"{percentage:.4g}% of records (i.e. one in "
@@ -264,9 +290,7 @@ class ComparisonLevel:
             return ""
         if self.u_probability is not None:
             percentage = self.u_probability * 100
-            one_in_n = (
-                1 / self.u_probability if self.u_probability > 0 else float("inf")
-            )
+            one_in_n = 1 / self.u_probability if self.u_probability > 0 else float("inf")
             return (
                 "Amongst non-matching record comparisons, "
                 f"{percentage:.4g}% of records (i.e. one in "
@@ -277,14 +301,10 @@ class ComparisonLevel:
             return ""
 
     def _add_trained_u_probability(self, val, desc="no description given"):
-        self._trained_u_probabilities.append(
-            {"probability": val, "description": desc, "m_or_u": "u"}
-        )
+        self._trained_u_probabilities.append({"probability": val, "description": desc, "m_or_u": "u"})
 
     def _add_trained_m_probability(self, val, desc="no description given"):
-        self._trained_m_probabilities.append(
-            {"probability": val, "description": desc, "m_or_u": "m"}
-        )
+        self._trained_m_probabilities.append({"probability": val, "description": desc, "m_or_u": "m"})
 
     @property
     def _has_estimated_u_values(self):
@@ -374,34 +394,23 @@ class ComparisonLevel:
 
     @property
     def _bayes_factor_description(self):
-        text = (
-            f"If comparison level is `{self.label_for_charts.lower()}` "
-            "then comparison is"
-        )
+        text = f"If comparison level is `{self.label_for_charts.lower()}` " "then comparison is"
 
         if self._bayes_factor == math.inf:
             return f"{text} certain to be a match"
         elif self._bayes_factor == 0.0:
             return f"{text} impossible to be a match"
         elif self._bayes_factor >= 1.0:
-            return (
-                f"{text} {self._num_fmt_dp_or_sf(self._bayes_factor)} times "
-                "more likely to be a match"
-            )
+            return f"{text} {self._num_fmt_dp_or_sf(self._bayes_factor)} times " "more likely to be a match"
         else:
             mult = 1 / self._bayes_factor
-            return (
-                f"{text} {self._num_fmt_dp_or_sf(mult)} times "
-                "less likely to be a match"
-            )
+            return f"{text} {self._num_fmt_dp_or_sf(mult)} times " "less likely to be a match"
 
     @property
     def label_for_charts(self):
         return self._label_for_charts or str(self.comparison_vector_value)
 
-    def _label_for_charts_no_duplicates(
-        self, comparison_levels: list[ComparisonLevel] = None
-    ) -> str:
+    def _label_for_charts_no_duplicates(self, comparison_levels: list[ComparisonLevel] = None) -> str:
         if comparison_levels is not None:
             labels = []
             for cl in comparison_levels:
@@ -425,8 +434,7 @@ class ComparisonLevel:
         if (cvv := self._comparison_vector_value) is not None:
             return cvv
         raise ValueError(
-            "To access a `comparison_vector_value`, a `ComparisonLevel` must "
-            "belong to a `Comparison`"
+            "To access a `comparison_vector_value`, a `ComparisonLevel` must " "belong to a `Comparison`"
         )
 
     @property
@@ -453,9 +461,7 @@ class ComparisonLevel:
         if self._is_else_level:
             return []
 
-        cols = get_columns_used_from_sql(
-            self.sql_condition, sqlglot_dialect=self.sqlglot_dialect
-        )
+        cols = get_columns_used_from_sql(self.sql_condition, sqlglot_dialect=self.sqlglot_dialect)
         # Parsed order seems to be roughly in reverse order of apearance
         cols = cols[::-1]
 
@@ -505,9 +511,7 @@ class ComparisonLevel:
         if self._is_else_level:
             return False
 
-        sql_syntax_tree = sqlglot.parse_one(
-            self.sql_condition.lower(), read=self.sqlglot_dialect
-        )
+        sql_syntax_tree = sqlglot.parse_one(self.sql_condition.lower(), read=self.sqlglot_dialect)
         sql_cnf = simplify(normalize(sql_syntax_tree))
 
         exprs = _get_and_subclauses(sql_cnf)
@@ -518,17 +522,13 @@ class ComparisonLevel:
 
     @property
     def _exact_match_colnames(self):
-        sql_syntax_tree = sqlglot.parse_one(
-            self.sql_condition.lower(), read=self.sqlglot_dialect
-        )
+        sql_syntax_tree = sqlglot.parse_one(self.sql_condition.lower(), read=self.sqlglot_dialect)
         sql_cnf = simplify(normalize(sql_syntax_tree))
 
         exprs = _get_and_subclauses(sql_cnf)
         for expr in exprs:
             if not _is_exact_match(expr):
-                raise ValueError(
-                    "sql_cond not an exact match so can't get exact match column name"
-                )
+                raise ValueError("sql_cond not an exact match so can't get exact match column name")
 
         cols = []
         for expr in exprs:
@@ -564,9 +564,7 @@ class ComparisonLevel:
         )
 
     def _bayes_factor_sql(self, gamma_column_name: str) -> str:
-        bayes_factor = (
-            self._bayes_factor if self._bayes_factor != math.inf else "'Infinity'"
-        )
+        bayes_factor = self._bayes_factor if self._bayes_factor != math.inf else "'Infinity'"
         sql = f"""
         WHEN
         {gamma_column_name} = {self.comparison_vector_value}
@@ -574,12 +572,8 @@ class ComparisonLevel:
         """
         return dedent(sql)
 
-    def _tf_adjustment_sql(
-        self, gamma_column_name: str, comparison_levels: list[ComparisonLevel]
-    ) -> str:
-        gamma_colname_value_is_this_level = (
-            f"{gamma_column_name} = {self.comparison_vector_value}"
-        )
+    def _tf_adjustment_sql(self, gamma_column_name: str, comparison_levels: list[ComparisonLevel]) -> str:
+        gamma_colname_value_is_this_level = f"{gamma_column_name} = {self.comparison_vector_value}"
 
         # A tf adjustment of 1D is a multiplier of 1.0, i.e. no adjustment
         if self.comparison_vector_value == -1:
@@ -597,9 +591,7 @@ class ComparisonLevel:
             coalesce_r_l = f"coalesce({tf_adj_col.tf_name_r}, {tf_adj_col.tf_name_l})"
 
             tf_adjustment_exists = f"{coalesce_l_r} is not null"
-            u_prob_exact_match = self._u_probability_corresponding_to_exact_match(
-                comparison_levels
-            )
+            u_prob_exact_match = self._u_probability_corresponding_to_exact_match(comparison_levels)
 
             # Using coalesce protects against one of the tf adjustments being null
             # Which would happen if the user provided their own tf adjustment table
@@ -687,9 +679,7 @@ class ComparisonLevel:
         "A detailed representation of this level to describe it in charting outputs"
         output: dict[str, Any] = {}
         output["sql_condition"] = self.sql_condition
-        output["label_for_charts"] = self._label_for_charts_no_duplicates(
-            comparison_levels
-        )
+        output["label_for_charts"] = self._label_for_charts_no_duplicates(comparison_levels)
 
         if not self._is_null_level:
             output["m_probability"] = self.m_probability

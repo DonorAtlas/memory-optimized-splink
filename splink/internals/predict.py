@@ -6,10 +6,7 @@ from typing import List
 
 from splink.internals.comparison import Comparison
 from splink.internals.input_column import InputColumn
-from splink.internals.misc import (
-    prob_to_bayes_factor,
-    threshold_args_to_match_weight,
-)
+from splink.internals.misc import prob_to_bayes_factor, threshold_args_to_match_weight
 
 from .settings import CoreModelSettings, Settings
 
@@ -73,7 +70,6 @@ def predict_from_comparison_vectors_sqls(
     select {select_cols_expr} {clerical_match_score}
     from __splink__df_comparison_vectors
     """
-
     sql_info = {
         "sql": sql,
         "output_table_name": "__splink__df_match_weight_parts",
@@ -100,10 +96,7 @@ def predict_from_comparison_vectors_sqls(
         bf_terms,
         sql_infinity_expression,
     )
-
-    threshold_as_mw = threshold_args_to_match_weight(
-        threshold_match_probability, threshold_match_weight
-    )
+    threshold_as_mw = threshold_args_to_match_weight(threshold_match_probability, threshold_match_weight)
 
     if threshold_as_mw is not None:
         threshold_expr = f" where log2({bayes_factor_expr}) >= {threshold_as_mw} "
@@ -138,9 +131,7 @@ def predict_from_agreement_pattern_counts_sqls(
     select_cols = []
 
     for cc in comparisons:
-        cc_sqls = [
-            cl._bayes_factor_sql(cc._gamma_column_name) for cl in cc.comparison_levels
-        ]
+        cc_sqls = [cl._bayes_factor_sql(cc._gamma_column_name) for cl in cc.comparison_levels]
         sql = " ".join(cc_sqls)
         sql = f"CASE {sql} END as {cc._bf_column_name}"
         select_cols.append(cc._gamma_column_name)
@@ -191,9 +182,7 @@ def predict_from_agreement_pattern_counts_sqls(
     return sqls
 
 
-def _combine_prior_and_bfs(
-    prior: float, bf_terms: list[str], sql_infinity_expr: str
-) -> tuple[str, str]:
+def _combine_prior_and_bfs(prior: float, bf_terms: list[str], sql_infinity_expr: str) -> tuple[str, str]:
     """Compute the combined Bayes factor and match probability expressions"""
     if prior == 1.0:
         bf_expr = sql_infinity_expr
