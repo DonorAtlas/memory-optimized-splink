@@ -57,7 +57,6 @@ def _generage_comparison_metrics_columns(
         cols.extend(add_col.names_l_r)
 
     if needs_matchkey_column:
-        logger.info("needs_matchkey_column")
         cols.append("match_key")
 
     cols = dedupe_preserving_order(cols)
@@ -77,7 +76,6 @@ def _generage_comparison_vectors_columns(
         cols.extend(uid_col.names_l_r)
 
     for cc in comparisons:
-        logger.info(f"cc: {cc}")
         cols.extend(cc._columns_to_select_for_cv_from_metrics(retain_matching_columns))
 
     for add_col in additional_columns_to_retain:
@@ -187,7 +185,7 @@ def compute_comparison_vectors_from_comparison_metrics_sql(
     return comparison_vectors_sql
 
 
-def compute_comparison_vector_values_from_id_pairs_sqls(
+def compute_comparison_vector_values_from_id_pairs_memory_optimized(
     columns_to_select_for_blocking: List[str],
     unique_id_input_columns: list[InputColumn],
     comparisons: list[Comparison],
@@ -286,5 +284,66 @@ def compute_comparison_vector_values_from_id_pairs_sqls(
             "output_table_name": "__splink__df_comparison_vectors",
         }
     )
+
+    return sqls
+
+
+def compute_comparison_vector_values_from_id_pairs_sqls(
+    columns_to_select_for_blocking: List[str],
+    columns_to_select_for_comparison_vector_values: list[str],
+    input_tablename_l: str,
+    input_tablename_r: str,
+    source_dataset_input_column: Optional[InputColumn],
+    unique_id_input_column: InputColumn,
+    include_clerical_match_score: bool = False,
+) -> list[dict[str, str]]:
+    """Compute the comparison vectors from __splink__blocked_id_pairs, the
+    materialised dataframe of blocked pairwise record comparisons.
+
+    See [the fastlink paper](https://imai.fas.harvard.edu/research/files/linkage.pdf)
+    for more details of what is meant by comparison vectors.
+    """
+    sqls = []
+
+    if source_dataset_input_column:
+        unique_id_columns = [source_dataset_input_column, unique_id_input_column]
+    else:
+        unique_id_columns = [unique_id_input_column]
+
+    select_cols_expr = ", \n".join(columns_to_select_for_blocking)
+
+    uid_l_expr = _composite_unique_id_from_nodes_sql(unique_id_columns, "l")
+    uid_r_expr = _composite_unique_id_from_nodes_sql(unique_id_columns, "r")
+
+    # The first table selects the required columns from the input tables
+    # and alises them as `col_l`, `col_r` etc
+    # using the __splink__blocked_id_pairs as an associated (junction) table
+
+    # That is, it does the join, but doesn't compute the comparison vectors
+    sql = f"""
+    select {select_cols_expr}, b.match_key
+    from {input_tablename_l} as l
+    inner join __splink__blocked_id_pairs as b
+    on {uid_l_expr} = b.join_key_l
+    inner join {input_tablename_r} as r
+    on {uid_r_expr} = b.join_key_r
+    """
+
+    sqls.append({"sql": sql, "output_table_name": "blocked_with_cols"})
+
+    select_cols_expr = ", \n".join(columns_to_select_for_comparison_vector_values)
+
+    if include_clerical_match_score:
+        clerical_match_score = ", clerical_match_score"
+    else:
+        clerical_match_score = ""
+
+    # The second table computes the comparison vectors from these aliases
+    sql = f"""
+    select {select_cols_expr} {clerical_match_score}
+    from blocked_with_cols
+    """
+
+    sqls.append({"sql": sql, "output_table_name": "__splink__df_comparison_vectors"})
 
     return sqls

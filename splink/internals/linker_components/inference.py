@@ -189,15 +189,7 @@ class LinkerInference:
         Returns:
             SplinkDataFrame: A SplinkDataFrame of the scored pairwise comparisons.
         """
-
         pipeline = CTEPipeline()
-
-        # If materialise_after_computing_term_frequencies=False and the user only
-        # calls predict, it runs as a single pipeline with no materialisation
-        # of anything.
-
-        # In duckdb, calls to random() in a CTE pipeline cause problems:
-        # https://gist.github.com/RobinL/d329e7004998503ce91b68479aa41139
         if (
             materialise_after_computing_term_frequencies
             or self._linker._sql_dialect.sql_dialect_str == "duckdb"
@@ -256,8 +248,16 @@ class LinkerInference:
             logger.info(f"Blocking time: {blocking_time:.2f} seconds")
             start_time = time.time()
 
-        df_comparison_vectors = self._comparison_vectors()
-        pipeline = CTEPipeline([df_comparison_vectors, df_concat_with_tf])
+        sqls = compute_comparison_vector_values_from_id_pairs_sqls(
+            self._linker._settings_obj._columns_to_select_for_blocking,
+            self._linker._settings_obj._columns_to_select_for_comparison_vector_values,
+            input_tablename_l="__splink__df_concat_with_tf",
+            input_tablename_r="__splink__df_concat_with_tf",
+            source_dataset_input_column=self._linker._settings_obj.column_info_settings.source_dataset_input_column,
+            unique_id_input_column=self._linker._settings_obj.column_info_settings.unique_id_input_column,
+        )
+        pipeline.enqueue_list_of_sqls(sqls)
+
         sqls = predict_from_comparison_vectors_sqls_using_settings(
             self._linker._settings_obj,
             threshold_match_probability,
@@ -814,9 +814,10 @@ class LinkerInference:
         join_key_col = _composite_unique_id_from_nodes_sql(unique_id_cols)
         join_key_select = f"{join_key_col} as {join_key_col_name}"
 
-        blocking_rule_sql = self._linker._settings_obj._blocking_rules_to_generate_predictions[
-            0
-        ].blocking_rule_sql
+        blocking_rule_sqls = [
+            br.blocking_rule_sql for br in self._linker._settings_obj._blocking_rules_to_generate_predictions
+        ]
+        blocking_rule_sql = " AND ".join(blocking_rule_sqls)
         cols_used_from_br_sql = get_columns_used_from_sql(
             blocking_rule_sql, sqlglot_dialect=self._linker._db_api.sql_dialect.sqlglot_dialect
         )

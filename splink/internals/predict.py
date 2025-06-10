@@ -48,6 +48,7 @@ def predict_from_comparison_vectors_sqls(
     needs_matchkey_column: bool = False,
     include_clerical_match_score: bool = False,
     sql_infinity_expression: str = "'infinity'",
+    comparison_vectors_table_name: str = "__splink__df_comparison_vectors",
 ) -> list[dict[str, str]]:
     sqls = []
 
@@ -68,7 +69,7 @@ def predict_from_comparison_vectors_sqls(
 
     sql = f"""
     select {select_cols_expr} {clerical_match_score}
-    from __splink__df_comparison_vectors
+    from {comparison_vectors_table_name}
     """
     sql_info = {
         "sql": sql,

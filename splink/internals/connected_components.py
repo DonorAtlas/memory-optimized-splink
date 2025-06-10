@@ -150,9 +150,7 @@ def _cc_update_representatives_first_iter() -> str:
     return sql
 
 
-def _cc_generate_representatives_loop_cond(
-    prev_representatives: str, filtered_neighbours: str
-) -> str:
+def _cc_generate_representatives_loop_cond(prev_representatives: str, filtered_neighbours: str) -> str:
     """SQL for Connected components main loop.
 
     Takes our core neighbours table (this is constant), and
@@ -463,9 +461,7 @@ def solve_connected_components(
         )
         pipeline.enqueue_sql(sql, "r")
         # Update our needs_updating column in the representatives table.
-        sql = _cc_update_representatives_loop_cond(
-            prev_representatives_thinned.physical_name
-        )
+        sql = _cc_update_representatives_loop_cond(prev_representatives_thinned.physical_name)
 
         repr_name = f"__splink__df_representatives_{iteration}"
 
@@ -490,9 +486,7 @@ def solve_connected_components(
 
         pipeline.enqueue_sql(sql, "__splink__df_root_rows")
 
-        root_rows_df = db_api.sql_pipeline_to_splink_dataframe(
-            pipeline, use_cache=False
-        )
+        root_rows_df = db_api.sql_pipeline_to_splink_dataframe(pipeline, use_cache=False)
 
         root_rows = root_rows_df.as_record_dict()
         root_rows_df.drop_table_from_database_and_remove_from_cache()
@@ -511,8 +505,10 @@ def solve_connected_components(
 
     sql = " UNION ALL ".join(
         [
-            f"""select node_id as {node_id_column_name}, representative as cluster_id
-            from {t.physical_name}"""
+            f"""select ANY_VALUE(node_id) as {node_id_column_name}, 
+            md5(string_agg(node_id::text, ',' order by node_id)) as cluster_id
+            from {t.physical_name}
+            group by representative"""
             for t in converged_clusters_tables
         ]
     )

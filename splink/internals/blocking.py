@@ -15,6 +15,7 @@ from splink.internals.dialects import SplinkDialect
 from splink.internals.exceptions import SplinkException
 from splink.internals.input_column import InputColumn
 from splink.internals.misc import ensure_is_list
+from splink.internals.parse_sql import get_columns_used_from_sql
 from splink.internals.pipeline import CTEPipeline
 from splink.internals.splink_dataframe import SplinkDataFrame
 from splink.internals.unique_id_concat import (
@@ -193,6 +194,50 @@ class BlockingRule:
             {uid_r_expr} as join_key_r
             from {input_tablename_l} as l
             inner join {input_tablename_r} as r
+            on
+            ({self.blocking_rule_sql})
+            {where_condition}
+            {self.exclude_pairs_generated_by_all_preceding_rules_sql(
+                source_dataset_input_column,
+                unique_id_input_column)
+            }
+            """
+        return sql
+
+    def create_blocked_pairs_sql_optimized(
+        self,
+        *,
+        source_dataset_input_column: Optional[InputColumn],
+        unique_id_input_column: InputColumn,
+        input_tablename_l: str,
+        input_tablename_r: str,
+        where_condition: str,
+        join_key_col_name: str | None = None,
+    ) -> str:
+        if source_dataset_input_column:
+            unique_id_columns = [source_dataset_input_column, unique_id_input_column]
+        else:
+            unique_id_columns = [unique_id_input_column]
+
+        uid_l_expr = _composite_unique_id_from_nodes_sql(unique_id_columns, "l")
+        uid_r_expr = _composite_unique_id_from_nodes_sql(unique_id_columns, "r")
+
+        cols_to_sort = get_columns_used_from_sql(self.blocking_rule_sql, sqlglot_dialect=self.sqlglot_dialect)
+        if join_key_col_name:
+            cols_to_sort.append(join_key_col_name)
+
+        sql = f"""
+            WITH sorted AS (
+            SELECT *
+            FROM {input_tablename_r}
+            ORDER BY {", ".join(cols_to_sort)}
+            )
+            select
+            '{self.match_key}' as match_key,
+            {uid_l_expr} as join_key_l,
+            {uid_r_expr} as join_key_r
+            from sorted as l
+            join sorted as r
             on
             ({self.blocking_rule_sql})
             {where_condition}
@@ -727,6 +772,60 @@ def block_using_rules_sqls(
             input_tablename_l=input_tablename_l,
             input_tablename_r=input_tablename_r,
             where_condition=where_condition,
+        )
+        br_sqls.append(sql)
+
+    sql = " UNION ALL ".join(br_sqls)
+
+    sqls.append({"sql": sql, "output_table_name": "__splink__blocked_id_pairs"})
+
+    return sqls
+
+
+def block_using_rules_sqls_optimized(
+    *,
+    input_tablename_l: str,
+    input_tablename_r: str,
+    blocking_rules: List[BlockingRule],
+    link_type: "LinkTypeLiteralType",
+    source_dataset_input_column: Optional[InputColumn],
+    unique_id_input_column: InputColumn,
+    join_key_col_name: str | None = None,
+) -> list[dict[str, str]]:
+    """Use the blocking rules specified in the linker's settings object to
+    generate a SQL statement that will create pairwise record comparions
+    according to the blocking rule(s).
+
+    Where there are multiple blocking rules, the SQL statement contains logic
+    so that duplicate comparisons are not generated.
+    """
+
+    sqls = []
+
+    unique_id_input_columns = combine_unique_id_input_columns(
+        source_dataset_input_column, unique_id_input_column
+    )
+
+    where_condition = _sql_gen_where_condition(
+        link_type, unique_id_input_columns, join_key_col_name=join_key_col_name
+    )
+    # Cover the case where there are no blocking rules
+    # This is a bit of a hack where if you do a self-join on 'true'
+    # you create a cartesian product, rather than having separate code
+    # that generates a cross join for the case of no blocking rules
+    if not blocking_rules:
+        blocking_rules = [BlockingRule("1=1")]
+
+    br_sqls = []
+
+    for br in blocking_rules:
+        sql = br.create_blocked_pairs_sql_optimized(
+            unique_id_input_column=unique_id_input_column,
+            source_dataset_input_column=source_dataset_input_column,
+            input_tablename_l=input_tablename_l,
+            input_tablename_r=input_tablename_r,
+            where_condition=where_condition,
+            join_key_col_name=join_key_col_name,
         )
         br_sqls.append(sql)
 

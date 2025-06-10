@@ -5,7 +5,11 @@ from typing import TYPE_CHECKING, List
 
 import sqlglot
 
-from splink.internals.blocking import BlockingRule, block_using_rules_sqls
+from splink.internals.blocking import (
+    BlockingRule,
+    block_using_rules_sqls,
+    block_using_rules_sqls_optimized,
+)
 from splink.internals.charts import (
     ChartReturnType,
     m_u_parameters_interactive_history_chart,
@@ -16,7 +20,6 @@ from splink.internals.comparison import Comparison
 from splink.internals.comparison_vector_values import (
     compute_blocked_candidates_from_id_pairs_sql,
     compute_comparison_metrics_from_blocked_candidates_sql,
-    compute_comparison_vector_values_from_id_pairs_sqls,
     compute_comparison_vectors_from_comparison_metrics_sql,
 )
 from splink.internals.constants import LEVEL_NOT_OBSERVED_TEXT
@@ -213,7 +216,7 @@ class EMTrainingSession:
         nodes_with_tf_select_cols = self.db_api.sql_pipeline_to_splink_dataframe(pipeline)
 
         pipeline = CTEPipeline()
-        sqls = block_using_rules_sqls(
+        sqls = block_using_rules_sqls_optimized(
             input_tablename_l=nodes_with_tf_select_cols.physical_name,
             input_tablename_r=nodes_with_tf_select_cols.physical_name,
             blocking_rules=[self._blocking_rule_for_training],

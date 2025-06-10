@@ -6,13 +6,13 @@ from pathlib import Path
 from statistics import median
 from typing import Any, Dict, List, Optional, Sequence
 
-from splink.internals.blocking import (
-    BlockingRule,
-    block_using_rules_sqls,
-)
+from splink.internals.blocking import BlockingRule, block_using_rules_sqls
 from splink.internals.cache_dict_with_logging import CacheDictWithLogging
 from splink.internals.comparison_vector_values import (
+    compute_blocked_candidates_from_id_pairs_sql,
+    compute_comparison_metrics_from_blocked_candidates_sql,
     compute_comparison_vector_values_from_id_pairs_sqls,
+    compute_comparison_vectors_from_comparison_metrics_sql,
 )
 from splink.internals.database_api import AcceptableInputTableType, DatabaseAPISubClass
 from splink.internals.dialects import SplinkDialect
@@ -36,21 +36,19 @@ from splink.internals.misc import (
     prob_to_bayes_factor,
 )
 from splink.internals.optimise_cost_of_brs import suggest_blocking_rules
+from splink.internals.parse_sql import get_columns_used_from_sql
 from splink.internals.pipeline import CTEPipeline
-from splink.internals.predict import (
-    predict_from_comparison_vectors_sqls,
-)
+from splink.internals.predict import predict_from_comparison_vectors_sqls
 from splink.internals.settings_creator import SettingsCreator
 from splink.internals.settings_validation.log_invalid_columns import (
     InvalidColumnsLogger,
     SettingsColumnCleaner,
 )
-from splink.internals.settings_validation.valid_types import (
-    _validate_dialect,
-)
+from splink.internals.settings_validation.valid_types import _validate_dialect
 from splink.internals.splink_dataframe import SplinkDataFrame
 from splink.internals.unique_id_concat import (
     _composite_unique_id_from_edges_sql,
+    _composite_unique_id_from_nodes_sql,
 )
 from splink.internals.vertically_concatenate import (
     compute_df_concat_with_tf,
@@ -139,9 +137,7 @@ class Linker:
         self._db_api = db_api
 
         # TODO: temp hack for compat
-        self._intermediate_table_cache: CacheDictWithLogging = (
-            self._db_api._intermediate_table_cache
-        )
+        self._intermediate_table_cache: CacheDictWithLogging = self._db_api._intermediate_table_cache
 
         # Turn into a creator
         if not isinstance(settings, SettingsCreator):
@@ -157,9 +153,7 @@ class Linker:
         # or overwrite it with the db api dialect?
         # Maybe overwrite it here and incompatibilities have to be dealt with
         # by comparisons/ blocking rules etc??
-        self._settings_obj = settings_creator.get_settings(
-            db_api.sql_dialect.sql_dialect_str
-        )
+        self._settings_obj = settings_creator.get_settings(db_api.sql_dialect.sql_dialect_str)
 
         # TODO: Add test of what happens if the db_api is for a different backend
         # to the sql_dialect set in the settings dict
@@ -209,15 +203,12 @@ class Linker:
         # sort it for consistent ordering, and give each frame's
         # columns as a tuple so we can hash it
         column_names_by_input_df = [
-            tuple(sorted([col.name for col in input_df.columns]))
-            for input_df in input_dfs
+            tuple(sorted([col.name for col in input_df.columns])) for input_df in input_dfs
         ]
         # check that the set of input columns is the same for each frame,
         # fail if the sets are different
         if len(set(column_names_by_input_df)) > 1:
-            common_cols = set.intersection(
-                *(set(col_names) for col_names in column_names_by_input_df)
-            )
+            common_cols = set.intersection(*(set(col_names) for col_names in column_names_by_input_df))
             problem_names = {
                 col
                 for frame_col_names in column_names_by_input_df
@@ -226,17 +217,14 @@ class Linker:
             }
             raise SplinkException(
                 "All linker input frames must have the same set of columns.  "
-                "The following columns were not found in all input frames: "
-                + ", ".join(problem_names)
+                "The following columns were not found in all input frames: " + ", ".join(problem_names)
             )
 
         columns = next(iter(input_dfs)).columns
 
         remove_columns = []
         if not include_unique_id_col_names:
-            remove_columns.extend(
-                self._settings_obj.column_info_settings.unique_id_input_columns
-            )
+            remove_columns.extend(self._settings_obj.column_info_settings.unique_id_input_columns)
         if not include_additional_columns_to_retain:
             remove_columns.extend(self._settings_obj._additional_columns_to_retain)
 
@@ -248,10 +236,7 @@ class Linker:
     @property
     def _source_dataset_column_already_exists(self):
         input_cols = [c.unquote().name for c in self._input_columns()]
-        return (
-            self._settings_obj.column_info_settings.source_dataset_column_name
-            in input_cols
-        )
+        return self._settings_obj.column_info_settings.source_dataset_column_name in input_cols
 
     @property
     def _concat_table_column_names(self) -> list[str]:
@@ -276,10 +261,7 @@ class Linker:
         # two datasets is much more efficient than self-joining the vertically
         # concatenation of all input datasets
 
-        if (
-            len(self._input_tables_dict) == 2
-            and self._settings_obj._link_type == "link_only"
-        ):
+        if len(self._input_tables_dict) == 2 and self._settings_obj._link_type == "link_only":
             return True
         else:
             return False
@@ -306,9 +288,7 @@ class Linker:
     def _infinity_expression(self):
         return self._sql_dialect.infinity_expression
 
-    def _random_sample_sql(
-        self, proportion, sample_size, seed=None, table=None, unique_id=None
-    ):
+    def _random_sample_sql(self, proportion, sample_size, seed=None, table=None, unique_id=None):
         return self._sql_dialect.random_sample_sql(
             proportion, sample_size, seed=seed, table=table, unique_id=unique_id
         )
@@ -321,17 +301,13 @@ class Linker:
         input_tables_list = ensure_is_list(input_tables)
 
         if input_aliases is None:
-            input_table_aliases = [
-                f"__splink__input_table_{i}" for i, _ in enumerate(input_tables_list)
-            ]
+            input_table_aliases = [f"__splink__input_table_{i}" for i, _ in enumerate(input_tables_list)]
             overwrite = True
         else:
             input_table_aliases = ensure_is_list(input_aliases)
             overwrite = False
 
-        return self._db_api.register_multiple_tables(
-            input_tables, input_table_aliases, overwrite
-        )
+        return self._db_api.register_multiple_tables(input_tables, input_table_aliases, overwrite)
 
     def _check_for_valid_settings(self):
         # raw tables don't yet exist in db
@@ -357,9 +333,7 @@ class Linker:
         )
         InvalidColumnsLogger(cleaned_settings).construct_output_logs(validate_settings)
 
-    def _table_to_splink_dataframe(
-        self, templated_name: str, physical_name: str
-    ) -> SplinkDataFrame:
+    def _table_to_splink_dataframe(self, templated_name: str, physical_name: str) -> SplinkDataFrame:
         """Create a SplinkDataframe from a table in the underlying database called
         `physical_name`.
         Associate a `templated_name` with this table, which signifies the purpose
@@ -427,17 +401,14 @@ class Linker:
 
         logger.log(
             15,
-            (
-                "---- Using training sessions to compute "
-                "probability two random records match ----"
-            ),
+            ("---- Using training sessions to compute " "probability two random records match ----"),
         )
         for em_training_session in self._em_training_sessions:
-            training_lambda = em_training_session.core_model_settings.probability_two_random_records_match  # noqa: E501
+            training_lambda = (
+                em_training_session.core_model_settings.probability_two_random_records_match
+            )  # noqa: E501
             training_lambda_bf = prob_to_bayes_factor(training_lambda)
-            reverse_level_infos = (
-                em_training_session._comparison_levels_to_reverse_blocking_rule
-            )
+            reverse_level_infos = em_training_session._comparison_levels_to_reverse_blocking_rule
 
             logger.log(
                 15,
@@ -467,8 +438,7 @@ class Linker:
 
                 logger.log(
                     15,
-                    f"Reversing comparison level {cc.output_column_name}"
-                    f" using bayes factor {bf:,.3f}",
+                    f"Reversing comparison level {cc.output_column_name}" f" using bayes factor {bf:,.3f}",
                 )
 
                 training_lambda_bf = training_lambda_bf / bf
@@ -547,9 +517,7 @@ class Linker:
         uid_l = _composite_unique_id_from_edges_sql(uid_cols, None, "l")
         uid_r = _composite_unique_id_from_edges_sql(uid_cols, None, "r")
 
-        blocking_rule = BlockingRule(
-            f"{uid_l} = {uid_r}", sql_dialect_str=self._sql_dialect.sql_dialect_str
-        )
+        blocking_rule = BlockingRule(f"{uid_l} = {uid_r}", sql_dialect_str=self._sql_dialect.sql_dialect_str)
 
         pipeline = CTEPipeline()
         nodes_with_tf = compute_df_concat_with_tf(self, pipeline)
@@ -687,14 +655,10 @@ class Linker:
             if blocking_rule_suggestions is None or len(blocking_rule_suggestions) == 0:
                 logger.warning("No set of blocking rules found within constraints")
             else:
-                suggestion = blocking_rule_suggestions[
-                    "suggested_blocking_rules_as_splink_brs"
-                ].iloc[0]
+                suggestion = blocking_rule_suggestions["suggested_blocking_rules_as_splink_brs"].iloc[0]
                 self._settings_obj._blocking_rules_to_generate_predictions = suggestion
 
-                suggestion_str = blocking_rule_suggestions[
-                    "suggested_blocking_rules_for_prediction"
-                ].iloc[0]
+                suggestion_str = blocking_rule_suggestions["suggested_blocking_rules_for_prediction"].iloc[0]
                 msg = (
                     "The following blocking_rules_to_generate_predictions were "
                     "automatically detected and assigned to your settings:\n"
@@ -767,13 +731,75 @@ class Linker:
                 logger.warning("No set of blocking rules found within constraints")
                 return None
             else:
-                suggestion_str = blocking_rule_suggestions[
-                    "suggested_EM_training_statements"
-                ].iloc[0]
+                suggestion_str = blocking_rule_suggestions["suggested_EM_training_statements"].iloc[0]
                 msg = "The following EM training strategy was detected:\n"
                 msg = f"{msg}{suggestion_str}"
                 logger.info(msg)
-                suggestion = blocking_rule_suggestions[
-                    "suggested_blocking_rules_as_splink_brs"
-                ].iloc[0]
+                suggestion = blocking_rule_suggestions["suggested_blocking_rules_as_splink_brs"].iloc[0]
                 return suggestion
+
+    def _comparison_vectors(self, blocked_pairs: SplinkDataFrame) -> SplinkDataFrame:
+        settings = self._settings_obj
+        source_dataset_input_column = settings.column_info_settings.source_dataset_input_column
+        unique_id_input_column = settings.column_info_settings.unique_id_input_column
+        unique_id_cols: list[InputColumn] = [unique_id_input_column]
+        if source_dataset_input_column:
+            unique_id_cols.append(source_dataset_input_column)
+        else:
+            unique_id_cols.append(
+                InputColumn(
+                    raw_column_name_or_column_reference="source_dataset",
+                    sqlglot_dialect_str=self._db_api.sql_dialect.sqlglot_dialect,
+                )
+            )
+
+        pipeline = CTEPipeline()
+        nodes_with_tf = compute_df_concat_with_tf(self, pipeline)
+
+        # Generate blocked candidates
+        pipeline = CTEPipeline()
+        blocked_candidates_sql = compute_blocked_candidates_from_id_pairs_sql(
+            settings._columns_to_select_for_blocking,
+            blocked_pairs_table_name=blocked_pairs.physical_name,
+            df_concat_with_tf_table_name=nodes_with_tf.physical_name,
+            source_dataset_input_column=source_dataset_input_column,
+            unique_id_input_column=unique_id_input_column,
+        )
+
+        pipeline.enqueue_sql(blocked_candidates_sql, "__splink__df_blocked_candidates")
+        logger.info(f"Computing blocked candidates")
+        blocked_candidates = self._db_api.sql_pipeline_to_splink_dataframe(pipeline)
+        self._db_api.delete_table_from_database(blocked_pairs.physical_name)
+
+        # Generate comparison metrics
+        pipeline = CTEPipeline()
+        logger.info("Generating comparison metrics")
+        comparison_metrics_sql = compute_comparison_metrics_from_blocked_candidates_sql(
+            unique_id_input_columns=unique_id_cols,
+            comparisons=self._settings_obj.core_model_settings.comparisons,
+            retain_matching_columns=False,
+            additional_columns_to_retain=[],
+            needs_matchkey_column=False,
+            blocked_candidates_table_name=blocked_candidates.physical_name,
+        )
+        pipeline.enqueue_sql(comparison_metrics_sql, "__splink__df_comparison_metrics")
+        logger.info(f"Computing comparison metrics")
+        comparison_metrics = self._db_api.sql_pipeline_to_splink_dataframe(pipeline)
+        self._db_api.delete_table_from_database(blocked_candidates.physical_name)
+
+        # Generate comparison vectors
+        pipeline = CTEPipeline()
+        logger.info("Generating comparison vectors")
+        comparison_vectors_sql = compute_comparison_vectors_from_comparison_metrics_sql(
+            comparison_metrics_table_name=comparison_metrics.physical_name,
+            unique_id_input_columns=unique_id_cols,
+            comparisons=self._settings_obj.core_model_settings.comparisons,
+            retain_matching_columns=False,
+            additional_columns_to_retain=[],
+            needs_matchkey_column=False,
+        )
+        pipeline.enqueue_sql(comparison_vectors_sql, "__splink__df_comparison_vectors")
+        logger.info(f"Computing comparison vector values")
+        comparison_vectors = self._db_api.sql_pipeline_to_splink_dataframe(pipeline)
+        self._db_api.delete_table_from_database(comparison_metrics.physical_name)
+        return comparison_vectors
