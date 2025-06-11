@@ -7,8 +7,12 @@ from typing import TYPE_CHECKING, List
 
 from splink.internals.blocking import block_using_rules_sqls, blocking_rule_to_obj
 from splink.internals.comparison_vector_values import (
+    compute_blocked_candidates_from_id_pairs_sql,
+    compute_comparison_metrics_from_blocked_candidates_sql,
     compute_comparison_vector_values_from_id_pairs_sqls,
+    compute_comparison_vectors_from_comparison_metrics_sql,
 )
+from splink.internals.input_column import InputColumn
 from splink.internals.m_u_records_to_parameters import (
     append_u_probability_to_comparison_level_trained_probabilities,
     m_u_records_to_lookup_dict,
@@ -196,22 +200,72 @@ def estimate_u_values(linker: Linker, max_pairs: float, seed: int = None) -> Non
     pipeline.enqueue_list_of_sqls(sql_infos)
     blocked_pairs = linker._db_api.sql_pipeline_to_splink_dataframe(pipeline)
 
-    pipeline = CTEPipeline([blocked_pairs, df_sample])
+    settings = linker._settings_obj
+    source_dataset_input_column = settings.column_info_settings.source_dataset_input_column
+    unique_id_input_column = settings.column_info_settings.unique_id_input_column
+    unique_id_cols: list[InputColumn] = [unique_id_input_column]
+    if source_dataset_input_column:
+        unique_id_cols.append(source_dataset_input_column)
+    else:
+        unique_id_cols.append(
+            InputColumn(
+                raw_column_name_or_column_reference="source_dataset",
+                sqlglot_dialect_str=linker._db_api.sql_dialect.sqlglot_dialect,
+            )
+        )
 
-    sqls = compute_comparison_vector_values_from_id_pairs_sqls(
-        settings_obj._columns_to_select_for_blocking,
-        settings_obj._columns_to_select_for_comparison_vector_values,
-        input_tablename_l="__splink__df_concat_sample",
-        input_tablename_r="__splink__df_concat_sample",
+    # Generate blocked candidates from id pairs (with all columns)
+    bc_pipeline = CTEPipeline()
+    blocked_candidates_sql = compute_blocked_candidates_from_id_pairs_sql(
+        columns_to_select_for_blocking=settings_obj._columns_to_select_for_blocking,
+        blocked_pairs_table_name=blocked_pairs.physical_name,
+        df_concat_with_tf_table_name=df_sample.physical_name,
         source_dataset_input_column=settings_obj.column_info_settings.source_dataset_input_column,
         unique_id_input_column=settings_obj.column_info_settings.unique_id_input_column,
     )
 
-    pipeline.enqueue_list_of_sqls(sqls)
+    bc_pipeline.enqueue_sql(blocked_candidates_sql, "__splink__df_blocked_candidates")
+    logger.info(f"Computing blocked candidates")
+    blocked_candidates = linker._db_api.sql_pipeline_to_splink_dataframe(bc_pipeline)
+    linker._db_api.delete_table_from_database(blocked_pairs.physical_name)
 
-    sql = """
+    # Generate comparison metrics (with all columns)
+    cm_pipline = CTEPipeline()
+    logger.info("Generating comparison metrics")
+    comparison_metrics_sql = compute_comparison_metrics_from_blocked_candidates_sql(
+        unique_id_input_columns=unique_id_cols,
+        comparisons=settings_obj.comparisons,
+        retain_matching_columns=False,
+        additional_columns_to_retain=[],
+        needs_matchkey_column=False,
+        blocked_candidates_table_name=blocked_candidates.physical_name,
+    )
+    cm_pipline.enqueue_sql(comparison_metrics_sql, "__splink__df_comparison_metrics")
+    logger.info(f"Computing comparison metrics")
+    comparison_metrics = linker._db_api.sql_pipeline_to_splink_dataframe(cm_pipline)
+    linker._db_api.delete_table_from_database(blocked_candidates.physical_name)
+
+    # Generate comparison vectors
+    cv_pipeline = CTEPipeline()
+    logger.info("Generating comparison vectors")
+    comparison_vectors_sql = compute_comparison_vectors_from_comparison_metrics_sql(
+        comparison_metrics_table_name=comparison_metrics.physical_name,
+        unique_id_input_columns=unique_id_cols,
+        comparisons=settings_obj.core_model_settings.comparisons,
+        retain_matching_columns=False,
+        additional_columns_to_retain=[],
+        needs_matchkey_column=False,
+    )
+    cv_pipeline.enqueue_sql(comparison_vectors_sql, "__splink__df_comparison_vectors")
+    logger.info(f"Computing comparison vector values")
+    comparison_vectors = linker._db_api.sql_pipeline_to_splink_dataframe(cv_pipeline)
+    linker._db_api.delete_table_from_database(comparison_metrics.physical_name)
+    # ----------------------------------------------------------------------------
+
+    pipeline = CTEPipeline()
+    sql = f"""
     select *, cast(0.0 as float8) as match_probability
-    from __splink__df_comparison_vectors
+    from {comparison_vectors.physical_name}
     """
 
     pipeline.enqueue_sql(sql, "__splink__df_predict")

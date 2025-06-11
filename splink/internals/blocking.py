@@ -782,7 +782,7 @@ def block_using_rules_sqls(
     return sqls
 
 
-def block_using_rules_sqls_optimized(
+def block_using_rules_sql_optimized(
     *,
     input_tablename_l: str,
     input_tablename_r: str,
@@ -791,7 +791,7 @@ def block_using_rules_sqls_optimized(
     source_dataset_input_column: Optional[InputColumn],
     unique_id_input_column: InputColumn,
     join_key_col_name: str | None = None,
-) -> list[dict[str, str]]:
+) -> str:
     """Use the blocking rules specified in the linker's settings object to
     generate a SQL statement that will create pairwise record comparions
     according to the blocking rule(s).
@@ -829,8 +829,4 @@ def block_using_rules_sqls_optimized(
         )
         br_sqls.append(sql)
 
-    sql = " UNION ALL ".join(br_sqls)
-
-    sqls.append({"sql": sql, "output_table_name": "__splink__blocked_id_pairs"})
-
-    return sqls
+    return " UNION ALL ".join(br_sqls)

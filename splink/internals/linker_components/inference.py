@@ -843,8 +843,8 @@ class LinkerInference:
             input_tablename_r=nodes_with_tf_select_cols.physical_name,
             blocking_rules=[self._linker._settings_obj._blocking_rules_to_generate_predictions[0]],
             link_type=settings._link_type,
-            source_dataset_input_column=settings.column_info_settings.source_dataset_input_column,
-            unique_id_input_column=settings.column_info_settings.unique_id_input_column,
+            source_dataset_input_column=source_dataset_input_column,
+            unique_id_input_column=unique_id_input_column,
             join_key_col_name=join_key_col_name,
         )
         pipeline.enqueue_list_of_sqls(sqls)

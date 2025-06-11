@@ -5,11 +5,7 @@ from typing import TYPE_CHECKING, List
 
 import sqlglot
 
-from splink.internals.blocking import (
-    BlockingRule,
-    block_using_rules_sqls,
-    block_using_rules_sqls_optimized,
-)
+from splink.internals.blocking import BlockingRule, block_using_rules_sql_optimized
 from splink.internals.charts import (
     ChartReturnType,
     m_u_parameters_interactive_history_chart,
@@ -210,13 +206,15 @@ class EMTrainingSession:
         )
         required_cols = ", ".join(column_names)
 
+        # select relevant subset of df_concat_with_tf (only id columns + cols for blocking rule)
         pipeline = CTEPipeline()
         sql = f"SELECT {required_cols} FROM {nodes_with_tf.physical_name}"
         pipeline.enqueue_sql(sql, "__splink__df_concat_with_tf_select_cols")
         nodes_with_tf_select_cols = self.db_api.sql_pipeline_to_splink_dataframe(pipeline)
 
+        # block id pairs from relevant subset of df_concat_with_tf (only id columns)
         pipeline = CTEPipeline()
-        sqls = block_using_rules_sqls_optimized(
+        sql = block_using_rules_sql_optimized(
             input_tablename_l=nodes_with_tf_select_cols.physical_name,
             input_tablename_r=nodes_with_tf_select_cols.physical_name,
             blocking_rules=[self._blocking_rule_for_training],
@@ -225,13 +223,13 @@ class EMTrainingSession:
             unique_id_input_column=orig_settings.column_info_settings.unique_id_input_column,
             join_key_col_name=join_key_col_name,
         )
-        pipeline.enqueue_list_of_sqls(sqls)
+        pipeline.enqueue_sql(sql, "__splink__blocked_id_pairs")
 
         logger.info(f"Blocking pairs")
         blocked_pairs = self.db_api.sql_pipeline_to_splink_dataframe(pipeline)
         self.db_api.delete_table_from_database(nodes_with_tf_select_cols.physical_name)
 
-        # Generate blocked candidates
+        # Generate blocked candidates from id pairs (with all columns)
         pipeline = CTEPipeline()
         blocked_candidates_sql = compute_blocked_candidates_from_id_pairs_sql(
             orig_settings._columns_to_select_for_blocking,
@@ -246,7 +244,7 @@ class EMTrainingSession:
         blocked_candidates = self.db_api.sql_pipeline_to_splink_dataframe(pipeline)
         self.db_api.delete_table_from_database(blocked_pairs.physical_name)
 
-        # Generate comparison metrics
+        # Generate comparison metrics (with all columns)
         pipeline = CTEPipeline()
         logger.info("Generating comparison metrics")
         comparison_metrics_sql = compute_comparison_metrics_from_blocked_candidates_sql(
