@@ -89,6 +89,11 @@ class DatabaseAPI(ABC, Generic[TablishType]):
         )
         logger.info(sql)
         spark_df = self._log_and_run_sql_execution(sql, templated_name, physical_name)
+        try:
+            logger.info(f"Required cols: {', '.join(spark_df.columns)}")
+            logger.info(f"Row count: {spark_df.count()}")
+        except Exception:
+            logger.info(f"Failed to get columns and row count for {templated_name}")
         output_df = self._cleanup_for_execute_sql(spark_df, templated_name, physical_name)
         self._intermediate_table_cache.executed_queries.append(output_df)
         return output_df
@@ -203,6 +208,15 @@ class DatabaseAPI(ABC, Generic[TablishType]):
                     output_tablename,
                     use_cache=False,
                 )
+                try:
+                    logger.info(
+                        f"Required cols: {', '.join([col.input_name for col in splink_dataframe.columns])}"
+                    )
+                    row_count_sql = f"SELECT COUNT(*) FROM {splink_dataframe.physical_name}"
+                    row_count = self._execute_sql_against_backend(row_count_sql)
+                    logger.info(f"Row count: {row_count}")
+                except Exception:
+                    logger.info(f"Failed to get columns and row count for {output_tablename}")
                 run_time = parse_duration(time.time() - start_time)
                 print(f"Step ran in: {run_time}")  # noqa: T201
             # don't want to cache anything in debug mode

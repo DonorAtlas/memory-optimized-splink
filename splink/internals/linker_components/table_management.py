@@ -5,18 +5,14 @@ from typing import TYPE_CHECKING
 
 from splink.internals.database_api import AcceptableInputTableType
 from splink.internals.input_column import InputColumn
-from splink.internals.misc import (
-    ascii_uid,
-)
+from splink.internals.misc import ascii_uid
 from splink.internals.pipeline import CTEPipeline
 from splink.internals.splink_dataframe import SplinkDataFrame
 from splink.internals.term_frequencies import (
     colname_to_tf_tablename,
     term_frequencies_for_single_column_sql,
 )
-from splink.internals.vertically_concatenate import (
-    enqueue_df_concat,
-)
+from splink.internals.vertically_concatenate import enqueue_df_concat
 
 if TYPE_CHECKING:
     from splink.internals.linker import Linker
@@ -137,14 +133,10 @@ class LinkerTableManagement:
         """
 
         table_name_physical = "__splink__df_concat_with_tf_" + self._linker._cache_uid
-        splink_dataframe = self.register_table(
-            input_data, table_name_physical, overwrite=overwrite
-        )
+        splink_dataframe = self.register_table(input_data, table_name_physical, overwrite=overwrite)
         splink_dataframe.templated_name = "__splink__df_concat_with_tf"
 
-        self._linker._intermediate_table_cache["__splink__df_concat_with_tf"] = (
-            splink_dataframe
-        )
+        self._linker._intermediate_table_cache["__splink__df_concat_with_tf"] = splink_dataframe
         return splink_dataframe
 
     def register_table_predict(self, input_data, overwrite=False):
@@ -174,12 +166,8 @@ class LinkerTableManagement:
                 pipeline.
         """  # noqa: E501
         table_name_physical = "__splink__df_predict_" + self._linker._cache_uid
-        splink_dataframe = self.register_table(
-            input_data, table_name_physical, overwrite=overwrite
-        )
-        self._linker._intermediate_table_cache["__splink__df_predict"] = (
-            splink_dataframe
-        )
+        splink_dataframe = self.register_table(input_data, table_name_physical, overwrite=overwrite)
+        self._linker._intermediate_table_cache["__splink__df_predict"] = splink_dataframe
         splink_dataframe.templated_name = "__splink__df_predict"
         return splink_dataframe
 
@@ -225,18 +213,61 @@ class LinkerTableManagement:
 
         table_name_templated = colname_to_tf_tablename(input_col)
         table_name_physical = f"{table_name_templated}_{self._linker._cache_uid}"
-        splink_dataframe = self.register_table(
-            input_data, table_name_physical, overwrite=overwrite
-        )
+        splink_dataframe = self.register_table(input_data, table_name_physical, overwrite=overwrite)
         self._linker._intermediate_table_cache[table_name_templated] = splink_dataframe
         splink_dataframe.templated_name = table_name_templated
         return splink_dataframe
 
+    def register_term_frequency_lookup_from_splink_dataframe(self, table_physical_name: str, col_name: str):
+        """Register a pre-computed term frequency lookup table for a given column.
+
+        This method allows you to register a term frequency table in the Splink
+        cache for a specific column. This table will then be used during linkage
+        rather than computing the term frequency table anew from your input data.
+
+        Args:
+            input_data (AcceptableInputTableType): The data representing the term
+                frequency table. This can be either a dictionary, pandas dataframe,
+                pyarrow table, or a spark dataframe.
+            col_name (str): The name of the column for which the term frequency
+                lookup table is being registered.
+            overwrite (bool, optional): Overwrite the table in the underlying
+                database if it exists. Defaults to False.
+
+        Returns:
+            SplinkDataFrame: An abstraction representing the registered term
+            frequency table.
+
+        Examples:
+            ```py
+            tf_table = [
+                {"first_name": "theodore", "tf_first_name": 0.012},
+                {"first_name": "alfie", "tf_first_name": 0.013},
+            ]
+            tf_df = pd.DataFrame(tf_table)
+            linker.table_management.register_term_frequency_lookup(
+                tf_df,
+                "first_name"
+            )
+            ```
+        """
+
+        input_col = InputColumn(
+            col_name,
+            column_info_settings=self._linker._settings_obj.column_info_settings,
+            sqlglot_dialect_str=self._linker._settings_obj._sql_dialect_str,
+        )
+
+        table_name_templated = colname_to_tf_tablename(input_col)
+        splink_dataframe = self._linker._db_api.table_to_splink_dataframe(
+            table_name_templated, table_physical_name
+        )
+        self._linker._intermediate_table_cache[table_name_templated] = splink_dataframe
+        return splink_dataframe
+
     def register_labels_table(self, input_data, overwrite=False):
         table_name_physical = "__splink__df_labels_" + ascii_uid(8)
-        splink_dataframe = self.register_table(
-            input_data, table_name_physical, overwrite=overwrite
-        )
+        splink_dataframe = self.register_table(input_data, table_name_physical, overwrite=overwrite)
         splink_dataframe.templated_name = "__splink__df_labels"
         return splink_dataframe
 
