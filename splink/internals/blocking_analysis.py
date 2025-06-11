@@ -179,6 +179,9 @@ def _count_comparisons_from_blocking_rule_pre_filter_conditions_sqls(
 
     sqls.append({"sql": sql, "output_table_name": "__splink__block_counts"})
 
+    for sql in sqls:
+        logger.info(sql["sql"])
+
     return sqls
 
 

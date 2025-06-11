@@ -94,9 +94,8 @@ def compute_blocked_candidates_from_id_pairs_sql(
     df_concat_with_tf_table_name: str,
     source_dataset_input_column: Optional[InputColumn],
     unique_id_input_column: InputColumn,
+    needs_matchkey_column: bool,
 ) -> str:
-    sqls = []
-
     if source_dataset_input_column:
         unique_id_columns: list[InputColumn | str] = [
             source_dataset_input_column,
@@ -108,8 +107,11 @@ def compute_blocked_candidates_from_id_pairs_sql(
     uid_l_expr = _composite_unique_id_from_nodes_sql(unique_id_columns, "l")
     uid_r_expr = _composite_unique_id_from_nodes_sql(unique_id_columns, "r")
 
+    if needs_matchkey_column:
+        select_cols_expr += ", b.match_key"
+
     blocked_candidates_sql = f"""
-                SELECT {select_cols_expr}, b.match_key
+                SELECT {select_cols_expr} 
                 FROM {blocked_pairs_table_name} AS b
                 JOIN {df_concat_with_tf_table_name} AS l
                 ON {uid_l_expr} = b.join_key_l

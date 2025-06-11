@@ -212,7 +212,7 @@ class BlockingRule:
         input_tablename_l: str,
         input_tablename_r: str,
         where_condition: str,
-        join_key_col_name: str | None = None,
+        cols_to_select: str | None = None,
     ) -> str:
         if source_dataset_input_column:
             unique_id_columns = [source_dataset_input_column, unique_id_input_column]
@@ -221,16 +221,10 @@ class BlockingRule:
 
         uid_l_expr = _composite_unique_id_from_nodes_sql(unique_id_columns, "l")
         uid_r_expr = _composite_unique_id_from_nodes_sql(unique_id_columns, "r")
-
-        cols_to_sort = get_columns_used_from_sql(self.blocking_rule_sql, sqlglot_dialect=self.sqlglot_dialect)
-        if join_key_col_name:
-            cols_to_sort.append(join_key_col_name)
-
         sql = f"""
             WITH sorted AS (
-            SELECT *
+            SELECT {cols_to_select},
             FROM {input_tablename_r}
-            ORDER BY {", ".join(cols_to_sort)}
             )
             select
             '{self.match_key}' as match_key,
@@ -702,12 +696,12 @@ def _sql_gen_where_condition(
     join_key_col_name: str | None = None,
 ) -> str:
     id_expr_l = (
-        f"l.{join_key_col_name}"
+        f"{join_key_col_name}_l"
         if join_key_col_name
         else _composite_unique_id_from_nodes_sql(unique_id_cols, "l")
     )
     id_expr_r = (
-        f"r.{join_key_col_name}"
+        f"{join_key_col_name}_r"
         if join_key_col_name
         else _composite_unique_id_from_nodes_sql(unique_id_cols, "r")
     )
@@ -782,7 +776,7 @@ def block_using_rules_sqls(
     return sqls
 
 
-def block_using_rules_sqls_optimized(
+def block_using_rules_sql_optimized(
     *,
     input_tablename_l: str,
     input_tablename_r: str,
@@ -790,8 +784,8 @@ def block_using_rules_sqls_optimized(
     link_type: "LinkTypeLiteralType",
     source_dataset_input_column: Optional[InputColumn],
     unique_id_input_column: InputColumn,
-    join_key_col_name: str | None = None,
-) -> list[dict[str, str]]:
+    cols_to_select: str | None = None,
+) -> str:
     """Use the blocking rules specified in the linker's settings object to
     generate a SQL statement that will create pairwise record comparions
     according to the blocking rule(s).
@@ -807,7 +801,7 @@ def block_using_rules_sqls_optimized(
     )
 
     where_condition = _sql_gen_where_condition(
-        link_type, unique_id_input_columns, join_key_col_name=join_key_col_name
+        link_type, unique_id_input_columns, join_key_col_name="join_key"
     )
     # Cover the case where there are no blocking rules
     # This is a bit of a hack where if you do a self-join on 'true'
@@ -825,12 +819,8 @@ def block_using_rules_sqls_optimized(
             input_tablename_l=input_tablename_l,
             input_tablename_r=input_tablename_r,
             where_condition=where_condition,
-            join_key_col_name=join_key_col_name,
+            cols_to_select=cols_to_select,
         )
         br_sqls.append(sql)
 
-    sql = " UNION ALL ".join(br_sqls)
-
-    sqls.append({"sql": sql, "output_table_name": "__splink__blocked_id_pairs"})
-
-    return sqls
+    return " UNION ALL ".join(br_sqls)
