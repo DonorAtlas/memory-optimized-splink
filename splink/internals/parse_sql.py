@@ -9,46 +9,58 @@ from sqlglot.expressions import Bracket, Column, Lambda
 from splink.internals.sql_transform import remove_quotes_from_identifiers
 
 
-def get_columns_used_from_sql(sql, sqlglot_dialect=None, retain_table_prefix=False):
-    column_names = set()
+def get_columns_used_from_sql(
+    sql: str, sqlglot_dialect: str = None, retain_table_prefix: bool = False
+) -> list[str]:
+    """
+    Parse the SQL and return a list of column names used.
+
+    - Retains all original functionality (bracketed columns, plain columns, ordering).
+    - Skips only lambda variable references, but still captures table columns inside lambdas.
+    - Optionally keeps table aliases as prefixes.
+    """
+    column_names = []
+    seen = set()
     syntax_tree = sqlglot.parse_one(sql, read=sqlglot_dialect)
 
     for subtree in syntax_tree.find_all(exp.Column):
-        # check if any parents are lambdas
+        # Detect if inside a Lambda; only skip unqualified (lambda var) columns
         parent = subtree.parent
+        in_lambda = False
         while parent is not None:
-            if type(parent) == Lambda:
+            if isinstance(parent, Lambda):
+                in_lambda = True
                 break
             parent = parent.parent
-
-        if type(parent) == Lambda:
+        if in_lambda and subtree.table is None:
             continue
 
-        if subtree.find(Bracket) and type(subtree) == Column:
-            # Column with bracket in it
+        # Original bracket vs plain logic
+        if subtree.find(Bracket) and isinstance(subtree, Column):
             table = subtree.table
             column = subtree.this.this.this
-        elif type(subtree.parent) != Column and type(subtree) == Column:
-            # Plain column
+        elif not isinstance(subtree.parent, Column) and isinstance(subtree, Column):
             table = subtree.table
-
             column = subtree.this.this
         else:
-            # Plain bracket
             table = None
             column = subtree.this.this.this
 
+        # Build final name with optional prefix
         if retain_table_prefix and table:
-            column_names.add(f"{table}.{column}")
+            key = f"{table}.{column}"
         else:
-            column_names.add(column)
+            key = column
 
-    return list(column_names)
+        # Preserve first-seen order
+        if key not in seen:
+            seen.add(key)
+            column_names.append(key)
+
+    return column_names
 
 
-def parse_columns_in_sql(
-    sql: str, sqlglot_dialect: str, remove_quotes: bool = True
-) -> Sequence[exp.Column]:
+def parse_columns_in_sql(sql: str, sqlglot_dialect: str, remove_quotes: bool = True) -> Sequence[exp.Column]:
     """Extract all columns found within a SQL expression.
 
     Args:
