@@ -777,7 +777,6 @@ def block_using_rules_sqls(
 
 
 def block_using_rules_sql_optimized(
-def block_using_rules_sql_optimized(
     *,
     input_tablename_l: str,
     input_tablename_r: str,
