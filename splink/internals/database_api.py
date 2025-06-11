@@ -203,15 +203,6 @@ class DatabaseAPI(ABC, Generic[TablishType]):
                     output_tablename,
                     use_cache=False,
                 )
-                try:
-                    logger.info(
-                        f"Required cols: {', '.join([col.input_name for col in splink_dataframe.columns])}"
-                    )
-                    row_count_sql = f"SELECT COUNT(*) FROM {splink_dataframe.physical_name}"
-                    row_count = self._execute_sql_against_backend(row_count_sql)
-                    logger.info(f"Row count: {row_count}")
-                except Exception:
-                    logger.info(f"Failed to get columns and row count for {output_tablename}")
                 run_time = parse_duration(time.time() - start_time)
                 print(f"Step ran in: {run_time}")  # noqa: T201
             # don't want to cache anything in debug mode

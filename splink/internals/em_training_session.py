@@ -240,7 +240,7 @@ class EMTrainingSession:
         )
         self.db_api.delete_table_from_database(blocked_pairs.physical_name)
 
-        # Generate comparison metrics
+        # Generate comparison metrics (with all columns)
         pipeline = CTEPipeline()
         logger.info("Generating comparison metrics")
         comparison_metrics_sql = compute_comparison_metrics_from_blocked_candidates_sql(
