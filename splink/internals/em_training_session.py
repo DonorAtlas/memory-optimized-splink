@@ -5,11 +5,7 @@ from typing import TYPE_CHECKING, List
 
 import sqlglot
 
-from splink.internals.blocking import (
-    BlockingRule,
-    block_using_rules_sqls,
-    block_using_rules_sqls_optimized,
-)
+from splink.internals.blocking import BlockingRule, block_using_rules_sql_optimized
 from splink.internals.charts import (
     ChartReturnType,
     m_u_parameters_interactive_history_chart,
@@ -194,6 +190,7 @@ class EMTrainingSession:
         cols_used_from_br_sql = get_columns_used_from_sql(
             blocking_rule_sql, sqlglot_dialect=self.db_api.sql_dialect.sqlglot_dialect
         )
+
         column_names = list(
             set(
                 cols_used_from_br_sql
@@ -210,40 +207,37 @@ class EMTrainingSession:
         )
         required_cols = ", ".join(column_names)
 
-        pipeline = CTEPipeline()
-        sql = f"SELECT {required_cols} FROM {nodes_with_tf.physical_name}"
-        pipeline.enqueue_sql(sql, "__splink__df_concat_with_tf_select_cols")
-        nodes_with_tf_select_cols = self.db_api.sql_pipeline_to_splink_dataframe(pipeline)
-
-        pipeline = CTEPipeline()
-        sqls = block_using_rules_sqls_optimized(
-            input_tablename_l=nodes_with_tf_select_cols.physical_name,
-            input_tablename_r=nodes_with_tf_select_cols.physical_name,
+        blocked_id_pairs_sql = block_using_rules_sql_optimized(
+            input_tablename_l=nodes_with_tf.physical_name,
+            input_tablename_r=nodes_with_tf.physical_name,
             blocking_rules=[self._blocking_rule_for_training],
             link_type=orig_settings._link_type,
             source_dataset_input_column=orig_settings.column_info_settings.source_dataset_input_column,
             unique_id_input_column=orig_settings.column_info_settings.unique_id_input_column,
-            join_key_col_name=join_key_col_name,
+            cols_to_select=required_cols,
         )
-        pipeline.enqueue_list_of_sqls(sqls)
 
         logger.info(f"Blocking pairs")
-        blocked_pairs = self.db_api.sql_pipeline_to_splink_dataframe(pipeline)
-        self.db_api.delete_table_from_database(nodes_with_tf_select_cols.physical_name)
+        blocked_pairs = self.db_api.sql_to_splink_dataframe_checking_cache(
+            blocked_id_pairs_sql, "__splink__blocked_id_pairs"
+        )
 
         # Generate blocked candidates
-        pipeline = CTEPipeline()
         blocked_candidates_sql = compute_blocked_candidates_from_id_pairs_sql(
             orig_settings._columns_to_select_for_blocking,
             blocked_pairs_table_name=blocked_pairs.physical_name,
             df_concat_with_tf_table_name=nodes_with_tf.physical_name,
             source_dataset_input_column=orig_settings.column_info_settings.source_dataset_input_column,
             unique_id_input_column=orig_settings.column_info_settings.unique_id_input_column,
+            needs_matchkey_column=False,
+            join_key_col_name=join_key_col_name,
         )
 
         pipeline.enqueue_sql(blocked_candidates_sql, "__splink__df_blocked_candidates")
         logger.info(f"Computing blocked candidates")
-        blocked_candidates = self.db_api.sql_pipeline_to_splink_dataframe(pipeline)
+        blocked_candidates = self.db_api.sql_to_splink_dataframe_checking_cache(
+            blocked_candidates_sql, "__splink__df_blocked_candidates"
+        )
         self.db_api.delete_table_from_database(blocked_pairs.physical_name)
 
         # Generate comparison metrics
