@@ -237,7 +237,7 @@ class EMTrainingSession:
         blocked_candidates = self.db_api.sql_to_splink_dataframe_checking_cache(
             blocked_candidates_sql, "__splink__df_blocked_candidates"
         )
-        self.db_api.delete_table_from_database(blocked_pairs.physical_name)
+        # self.db_api.delete_table_from_database(blocked_pairs.physical_name)
 
         # Generate comparison metrics (with all columns)
         pipeline = CTEPipeline()
@@ -253,7 +253,7 @@ class EMTrainingSession:
         pipeline.enqueue_sql(comparison_metrics_sql, "__splink__df_comparison_metrics")
         logger.info(f"Computing comparison metrics")
         comparison_metrics = self.db_api.sql_pipeline_to_splink_dataframe(pipeline)
-        self.db_api.delete_table_from_database(blocked_candidates.physical_name)
+        # self.db_api.delete_table_from_database(blocked_candidates.physical_name)
 
         # Generate comparison vectors
         pipeline = CTEPipeline()
@@ -269,7 +269,7 @@ class EMTrainingSession:
         pipeline.enqueue_sql(comparison_vectors_sql, "__splink__df_comparison_vectors")
         logger.info(f"Computing comparison vector values")
         comparison_vectors = self.db_api.sql_pipeline_to_splink_dataframe(pipeline)
-        self.db_api.delete_table_from_database(comparison_metrics.physical_name)
+        # self.db_api.delete_table_from_database(comparison_metrics.physical_name)
         return comparison_vectors
 
     def _train(self, cvv: SplinkDataFrame = None) -> CoreModelSettings:
