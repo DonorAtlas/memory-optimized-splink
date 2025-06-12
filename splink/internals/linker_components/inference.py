@@ -862,6 +862,8 @@ class LinkerInference:
             df_concat_with_tf_table_name=nodes_with_tf.physical_name,
             source_dataset_input_column=source_dataset_input_column,
             unique_id_input_column=unique_id_input_column,
+            # TODO: @aberdeenmorrow check this
+            needs_matchkey_column=True,
         )
 
         pipeline.enqueue_sql(blocked_candidates_sql, "__splink__df_blocked_candidates")

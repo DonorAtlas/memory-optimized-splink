@@ -125,6 +125,7 @@ class BlockingRule:
         self,
         source_dataset_input_column: Optional[InputColumn],
         unique_id_input_column: InputColumn,
+        pipline_has_preceding_tables: bool = False,
     ) -> tuple[str, str] | str:
         """A SQL string that excludes the results of ALL previous blocking rules from
         the pairwise comparisons generated.
@@ -139,11 +140,24 @@ class BlockingRule:
         id_expr_ex_l = _composite_unique_id_from_edges_sql([unique_id_input_column], "l", "ex")
         id_expr_ex_r = _composite_unique_id_from_edges_sql([unique_id_input_column], "r", "ex")
 
+        # TODO: @aberdeenmorrow clean up this code
         select_clauses = [
-            br.exclude_pairs_generated_by_this_rule_sql(source_dataset_input_column, unique_id_input_column)
+            (
+                br.exclude_pairs_generated_by_this_rule_for_exploding_blocking_rules_sql(
+                    source_dataset_input_column, unique_id_input_column
+                )
+                if isinstance(br, ExplodingBlockingRule)
+                else br.exclude_pairs_generated_by_this_rule_sql(
+                    source_dataset_input_column, unique_id_input_column
+                )
+            )
             for br in self.preceding_rules
         ]
-        previous_rules = ", exclude_pairs AS (" + " UNION ALL ".join(select_clauses) + ")"
+        previous_rules = (
+            f"{',' if pipline_has_preceding_tables else ''} exclude_pairs AS ("
+            + " UNION ALL ".join(select_clauses)
+            + ")"
+        )
         exclude = f"""LEFT JOIN exclude_pairs ex
             ON {id_expr_l} = {id_expr_ex_l}
             AND {id_expr_r} = {id_expr_ex_r}"""
@@ -415,12 +429,12 @@ class ExplodingBlockingRule(BlockingRule):
         br: BlockingRule,
         link_type: "LinkTypeLiteralType",
         unnested_table_name: str,
+        pipline_has_preceding_tables: bool = False,  # TODO: @aberdeenmorrow clean up this code
     ) -> str:
         """generates a table of the marginal id pairs from the exploded blocking rule
         i.e. pairs are only created that match this blocking rule and NOT any of
         the preceding blocking rules
         """
-
         unique_id_col = unique_id_input_column
         unique_id_input_columns = combine_unique_id_input_columns(
             source_dataset_input_column, unique_id_input_column
@@ -433,6 +447,7 @@ class ExplodingBlockingRule(BlockingRule):
             self.exclude_pairs_generated_by_all_preceding_rules_sql_memory_optimized(
                 source_dataset_input_column,
                 unique_id_input_column,
+                pipline_has_preceding_tables,  # TODO: @aberdeenmorrow clean up this code
             )
         )
 
@@ -459,7 +474,8 @@ class ExplodingBlockingRule(BlockingRule):
             self.exploded_id_pair_table.drop_table_from_database_and_remove_from_cache()
         self.exploded_id_pair_table = None
 
-    def exclude_pairs_generated_by_this_rule_sql(
+    # TODO: @aberdeenmorrow clean up this code
+    def exclude_pairs_generated_by_this_rule_for_exploding_blocking_rules_sql(
         self,
         source_dataset_input_column: Optional[InputColumn],
         unique_id_input_column: InputColumn,
@@ -648,6 +664,7 @@ def materialise_exploded_id_tables(
             br=br,
             link_type=link_type,
             unnested_table_name=unnested_table_name,
+            pipline_has_preceding_tables=True,
         )
 
         pipeline.enqueue_sql(sql, table_name)
@@ -712,7 +729,8 @@ def _sql_gen_where_condition(
     elif link_type in ["link_and_dedupe", "dedupe_only"]:
         where_condition = f"where {id_expr_l} < {id_expr_r}"
         if exclude_sql:
-            where_condition += f" AND {id_expr_ex} IS NULL"
+            # TODO: @aberdeenmorrow check this
+            where_condition += f' AND ex."unique_id_l" IS NULL'
     elif link_type == "link_only":
         source_dataset_col = unique_id_cols[0]
         where_condition = (
@@ -793,9 +811,6 @@ def block_using_rules_sql_optimized(
     Where there are multiple blocking rules, the SQL statement contains logic
     so that duplicate comparisons are not generated.
     """
-
-    sqls = []
-
     unique_id_input_columns = combine_unique_id_input_columns(
         source_dataset_input_column, unique_id_input_column
     )

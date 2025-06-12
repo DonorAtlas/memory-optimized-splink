@@ -94,7 +94,7 @@ def compute_blocked_candidates_from_id_pairs_sql(
     df_concat_with_tf_table_name: str,
     source_dataset_input_column: Optional[InputColumn],
     unique_id_input_column: InputColumn,
-    needs_matchkey_column: bool,
+    needs_matchkey_column: bool = True,
 ) -> str:
     if source_dataset_input_column:
         unique_id_columns: list[InputColumn | str] = [

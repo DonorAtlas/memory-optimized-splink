@@ -230,7 +230,6 @@ class EMTrainingSession:
             source_dataset_input_column=orig_settings.column_info_settings.source_dataset_input_column,
             unique_id_input_column=orig_settings.column_info_settings.unique_id_input_column,
             needs_matchkey_column=False,
-            join_key_col_name=join_key_col_name,
         )
 
         pipeline.enqueue_sql(blocked_candidates_sql, "__splink__df_blocked_candidates")
