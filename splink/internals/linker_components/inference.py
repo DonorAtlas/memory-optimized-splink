@@ -151,6 +151,25 @@ class LinkerInference:
 
         return deterministic_link_df
 
+    def _set_m_levels_from_only_help(self):
+        """
+        Set the m_levels from the only_help setting.
+        """
+        if self._linker._settings_obj.comparisons:
+            for c in self._linker._settings_obj.comparisons:
+                for cl in c.comparison_levels:
+                    if (
+                        cl.only_help
+                        and cl.is_null_level is False
+                        and cl.u_probability is not None
+                        and cl.m_probability is not None
+                        and cl.u_probability > cl.m_probability
+                    ):
+                        cl.m_probability = cl.u_probability
+                        logger.info(
+                            f"Setting m probability = u probability for {c.comparison_description} so that it can't hurt the comparison. (only_help = True)"
+                        )
+
     def predict(
         self,
         threshold_match_probability: float = None,
@@ -189,6 +208,9 @@ class LinkerInference:
         Returns:
             SplinkDataFrame: A SplinkDataFrame of the scored pairwise comparisons.
         """
+
+        self._set_m_levels_from_only_help()
+
         pipeline = CTEPipeline()
         if (
             materialise_after_computing_term_frequencies
@@ -810,10 +832,6 @@ class LinkerInference:
                 )
             )
 
-        join_key_col_name = f"__join_key_{settings._cache_uid}"
-        join_key_col = _composite_unique_id_from_nodes_sql(unique_id_cols)
-        join_key_select = f"{join_key_col} as {join_key_col_name}"
-
         blocking_rule_sqls = [
             br.blocking_rule_sql for br in self._linker._settings_obj._blocking_rules_to_generate_predictions
         ]
@@ -823,11 +841,7 @@ class LinkerInference:
         )
         column_names = list(
             set(
-                cols_used_from_br_sql
-                + [
-                    *[col.input_name for col in unique_id_cols if col is not None],
-                    join_key_select,
-                ]
+                cols_used_from_br_sql + [col.input_name for col in unique_id_cols if col is not None],
             )
         )
         required_cols = ", ".join(column_names)

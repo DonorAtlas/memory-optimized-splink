@@ -10,7 +10,7 @@ from splink.internals.pipeline import CTEPipeline
 from splink.internals.splink_dataframe import SplinkDataFrame
 from splink.internals.term_frequencies import (
     colname_to_tf_tablename,
-    term_frequencies_for_single_column_sql,
+    term_frequencies_for_single_column_sqls,
 )
 from splink.internals.vertically_concatenate import enqueue_df_concat
 
@@ -28,7 +28,7 @@ class LinkerTableManagement:
     def __init__(self, linker: Linker):
         self._linker = linker
 
-    def compute_tf_table(self, column_name: str) -> SplinkDataFrame:
+    def compute_tf_table(self, column_name: str, is_array_column: bool = False) -> SplinkDataFrame:
         """Compute a term frequency table for a given column and persist to the database
 
         This method is useful if you want to pre-compute term frequency tables e.g.
@@ -78,8 +78,10 @@ class LinkerTableManagement:
         else:
             pipeline = CTEPipeline()
             pipeline = enqueue_df_concat(self._linker, pipeline)
-            sql = term_frequencies_for_single_column_sql(input_col)
-            pipeline.enqueue_sql(sql, tf_tablename)
+            sqls = term_frequencies_for_single_column_sqls(
+                input_col, is_array_column=is_array_column, tf_table_name=tf_tablename
+            )
+            pipeline.enqueue_list_of_sqls(sqls)
             tf_df = self._linker._db_api.sql_pipeline_to_splink_dataframe(pipeline)
             self._linker._intermediate_table_cache[tf_tablename] = tf_df
 

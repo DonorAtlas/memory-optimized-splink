@@ -146,6 +146,13 @@ class Comparison:
         return any([cl._has_tf_adjustments for cl in self.comparison_levels])
 
     @property
+    def _tf_array_columns(self):
+        col_is_array = {
+            cl._tf_adjustment_input_column_name: cl._tf_col_is_array for cl in self.comparison_levels
+        }
+        return col_is_array
+
+    @property
     def _case_statement(self):
         sqls = [cl._when_then_comparison_vector_value_sql for cl in self.comparison_levels]
         sql = " ".join(sqls)
@@ -212,6 +219,8 @@ class Comparison:
         for cl in self.comparison_levels:
             if cl._has_tf_adjustments:
                 col = cl._tf_adjustment_input_column
+                if col is not None and col.is_array_column:
+                    continue
                 output_cols.extend(col.tf_name_l_r)
 
         return dedupe_preserving_order(output_cols)
@@ -236,6 +245,8 @@ class Comparison:
             for cl in self.comparison_levels:
                 if cl._has_tf_adjustments:
                     col = cl._tf_adjustment_input_column
+                    if col is not None and col.is_array_column:
+                        continue
                     output_cols.extend(col.tf_name_l_r)
 
         # Bayes factor case when statement
@@ -280,6 +291,8 @@ class Comparison:
             for cl in self.comparison_levels:
                 if cl._has_tf_adjustments:
                     col = cl._tf_adjustment_input_column
+                    if col is not None and col.is_array_column:
+                        continue
                     output_cols.extend(col.tf_name_l_r)
 
             output_cols.extend(self._match_weight_columns_to_multiply)
@@ -330,6 +343,8 @@ class Comparison:
         for cl in self.comparison_levels:
             if cl._has_tf_adjustments:
                 col = cl._tf_adjustment_input_column
+                if col is not None and col.is_array_column:
+                    continue
                 output_cols.extend(col.tf_name_l_r)
 
         return dedupe_preserving_order(output_cols)
@@ -352,6 +367,8 @@ class Comparison:
         for cl in self.comparison_levels:
             if cl._has_tf_adjustments:
                 col = cl._tf_adjustment_input_column
+                if col is not None and col.is_array_column:
+                    continue
                 output_cols.extend(col.tf_name_l_r)
 
         cl_cols: list[str] = []
@@ -368,17 +385,15 @@ class Comparison:
                 )
                 cl_cols.append(f"WHEN {cl.sql_condition} THEN {cl.comparison_vector_value}")
             else:
-                mapping, expr = cl.parsed_sql_condition
-                if len(mapping) > 0:
-                    cl_cols.append(f"WHEN {expr} THEN {cl.comparison_vector_value}")
-                else:
-                    output_cols.extend(
-                        [
-                            col_name
-                            for col in cl._input_columns_used_by_sql_condition
-                            for col_name in col.names_l_r
-                        ]
-                    )
+                _, expr = cl.parsed_sql_condition
+                cl_cols.append(f"WHEN {expr} THEN {cl.comparison_vector_value}")
+                # output_cols.extend(
+                #     [
+                #         col_name
+                #         for col in cl._input_columns_used_by_sql_condition
+                #         for col_name in col.names_l_r
+                #     ]
+                # )
 
         if len(cl_cols) > 0:
             output_cols.append(f"CASE {' '.join(cl_cols)} ELSE 0 END as {self._gamma_column_name}")

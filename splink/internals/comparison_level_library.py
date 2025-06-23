@@ -56,16 +56,12 @@ def validate_numeric_parameter(
 ) -> Union[int, float]:
     """Check if a distance threshold falls between two bounds."""
     if not isinstance(parameter_value, (int, float)):
-        raise TypeError(
-            f"'{parameter_name}' must be numeric, but received type "
-            f"{type(parameter_value)}"
-        )
+        raise TypeError(f"'{parameter_name}' must be numeric, but received type " f"{type(parameter_value)}")
     if lower_bound <= parameter_value <= upper_bound:
         return parameter_value
     else:
         raise ValueError(
-            f"'{parameter_name}' must be between "
-            f"{lower_bound} and {upper_bound} for {level_name}"
+            f"'{parameter_name}' must be between " f"{lower_bound} and {upper_bound} for {level_name}"
         )
 
 
@@ -80,9 +76,7 @@ def validate_categorical_parameter(
         return parameter_value
     else:
         comma_quote_separated_options = "', '".join(allowed_values)
-        raise ValueError(
-            f"'{parameter_name}' must be one of: " f"'{comma_quote_separated_options}'"
-        )
+        raise ValueError(f"'{parameter_name}' must be one of: " f"'{comma_quote_separated_options}'")
 
 
 class NullLevel(ComparisonLevelCreator):
@@ -141,6 +135,7 @@ class CustomLevel(ComparisonLevelCreator):
         sql_condition: str,
         label_for_charts: str = None,
         base_dialect_str: str = None,
+        only_help: bool = False,
     ):
         """Represents a comparison level with a custom sql expression
 
@@ -159,6 +154,7 @@ class CustomLevel(ComparisonLevelCreator):
         self.sql_condition = sql_condition
         self.label_for_charts = label_for_charts
         self.base_dialect_str = base_dialect_str
+        self.only_help = only_help
 
     def create_sql(self, sql_dialect: SplinkDialect) -> str:
         sql_condition = self.sql_condition
@@ -184,11 +180,7 @@ class CustomLevel(ComparisonLevelCreator):
         return sql_condition
 
     def create_label_for_charts(self) -> str:
-        return (
-            self.label_for_charts
-            if self.label_for_charts is not None
-            else self.sql_condition
-        )
+        return self.label_for_charts if self.label_for_charts is not None else self.sql_condition
 
     @staticmethod
     def _convert_to_creator(
@@ -206,22 +198,16 @@ class CustomLevel(ComparisonLevelCreator):
                 "tf_adjustment_column",
                 "tf_adjustment_weight",
                 "tf_minimum_u_value",
+                "tf_col_is_array",
                 "label_for_charts",
                 "disable_tf_exact_match_detection",
                 "fix_m_probability",
                 "fix_u_probability",
+                "only_help",
             )
             # split dict in two depending whether or not entries are 'configurables'
-            configurables = {
-                key: value
-                for key, value in cl_dict.items()
-                if key in configurable_parameters
-            }
-            cl_dict = {
-                key: value
-                for key, value in cl_dict.items()
-                if key not in configurable_parameters
-            }
+            configurables = {key: value for key, value in cl_dict.items() if key in configurable_parameters}
+            cl_dict = {key: value for key, value in cl_dict.items() if key not in configurable_parameters}
 
             custom_comparison = CustomLevel(**cl_dict)
             if configurables:
@@ -355,8 +341,7 @@ class LiteralMatchLevel(ComparisonLevelCreator):
 
     def create_label_for_charts(self) -> str:
         return (
-            f"{self.col_expression.label} = {self.literal_value_undialected} "
-            f"on {self.side_of_comparison}"
+            f"{self.col_expression.label} = {self.literal_value_undialected} " f"on {self.side_of_comparison}"
         )
 
 
@@ -390,9 +375,7 @@ class ColumnsReversedLevel(ComparisonLevelCreator):
         col_2 = self.col_expression_2
 
         if self.symmetrical:
-            return (
-                f"{col_1.name_l} = {col_2.name_r} AND {col_1.name_r} = {col_2.name_l}"
-            )
+            return f"{col_1.name_l} = {col_2.name_r} AND {col_1.name_r} = {col_2.name_l}"
         else:
             return f"{col_1.name_l} = {col_2.name_r}"
 
@@ -449,10 +432,7 @@ class DamerauLevenshteinLevel(ComparisonLevelCreator):
         return f"{dm_lev_fn}({col.name_l}, {col.name_r}) <= {self.distance_threshold}"
 
     def create_label_for_charts(self) -> str:
-        return (
-            f"Damerau-Levenshtein distance of {self.col_expression.label} "
-            f"<= {self.distance_threshold}"
-        )
+        return f"Damerau-Levenshtein distance of {self.col_expression.label} " f"<= {self.distance_threshold}"
 
 
 class JaroWinklerLevel(ComparisonLevelCreator):
@@ -596,10 +576,7 @@ class DistanceFunctionLevel(ComparisonLevelCreator):
         col = self.col_expression
         d_fn = self.distance_function_name
         less_or_greater_than = ">" if self.higher_is_more_similar else "<"
-        return (
-            f"{d_fn}({col.name_l}, {col.name_r}) "
-            f"{less_or_greater_than}= {self.distance_threshold}"
-        )
+        return f"{d_fn}({col.name_l}, {col.name_r}) " f"{less_or_greater_than}= {self.distance_threshold}"
 
     def create_label_for_charts(self) -> str:
         col = self.col_expression
@@ -614,9 +591,7 @@ class PairwiseStringDistanceFunctionLevel(ComparisonLevelCreator):
     def __init__(
         self,
         col_name: str | ColumnExpression,
-        distance_function_name: Literal[
-            "levenshtein", "damerau_levenshtein", "jaro_winkler", "jaro"
-        ],
+        distance_function_name: Literal["levenshtein", "damerau_levenshtein", "jaro_winkler", "jaro"],
         distance_threshold: Union[int, float],
     ):
         """A comparison level using the *most similar* string distance
@@ -796,9 +771,7 @@ class AbsoluteTimeDifferenceLevel(ComparisonLevelCreator):
         self.col_expression.sql_dialect = sql_dialect
 
         if self.input_is_string:
-            self.col_expression = self.datetime_parsed_column_expression(
-                self.datetime_format
-            )
+            self.col_expression = self.datetime_parsed_column_expression(self.datetime_format)
 
         # If the dialect has an override, use it
         if hasattr(sql_dialect, "absolute_time_difference"):
@@ -811,9 +784,7 @@ class AbsoluteTimeDifferenceLevel(ComparisonLevelCreator):
         )
 
         sqlglot_dialect_name = sql_dialect.sqlglot_dialect
-        translated = _translate_sql_string(
-            sqlglot_base_dialect_sql, sqlglot_dialect_name
-        )
+        translated = _translate_sql_string(sqlglot_base_dialect_sql, sqlglot_dialect_name)
         col = self.col_expression
         translated = translated.replace("___col____l", col.name_l)
         translated = translated.replace("___col____r", col.name_r)
@@ -821,10 +792,7 @@ class AbsoluteTimeDifferenceLevel(ComparisonLevelCreator):
 
     def create_label_for_charts(self) -> str:
         col = self.col_expression
-        return (
-            f"Abs difference of '{col.label} <= "
-            f"{self.time_threshold_raw} {self.time_metric}'"
-        )
+        return f"Abs difference of '{col.label} <= " f"{self.time_threshold_raw} {self.time_metric}'"
 
 
 class AbsoluteDateDifferenceLevel(AbsoluteTimeDifferenceLevel):
@@ -875,14 +843,11 @@ class DistanceInKMLevel(ComparisonLevelCreator):
         long_l, long_r = long_col.name_l, long_col.name_r
 
         distance_km_sql = (
-            f"{great_circle_distance_km_sql(lat_l, lat_r, long_l, long_r)} "
-            f"<= {self.km_threshold}"
+            f"{great_circle_distance_km_sql(lat_l, lat_r, long_l, long_r)} " f"<= {self.km_threshold}"
         )
 
         if self.not_null:
-            null_sql = " AND ".join(
-                [f"{c} is not null" for c in [lat_r, lat_l, long_l, long_r]]
-            )
+            null_sql = " AND ".join([f"{c} is not null" for c in [lat_r, lat_l, long_l, long_r]])
             distance_km_sql = f"({null_sql}) AND {distance_km_sql}"
 
         return distance_km_sql
@@ -957,9 +922,7 @@ class ArrayIntersectLevel(ComparisonLevelCreator):
             ARRAY_SIZE(ARRAY_INTERSECT(___col____l, ___col____r))
                 >= {self.min_intersection}
                 """
-        translated = _translate_sql_string(
-            sqlglot_base_dialect_sql, sqlglot_dialect_name
-        )
+        translated = _translate_sql_string(sqlglot_base_dialect_sql, sqlglot_dialect_name)
 
         self.col_expression.sql_dialect = sql_dialect
         col = self.col_expression
@@ -995,18 +958,14 @@ class ArraySubsetLevel(ComparisonLevelCreator):
 
         empty_check = ""
         if not self.empty_is_subset:
-            empty_check = (
-                "LEAST(ARRAY_SIZE(___col____l), ARRAY_SIZE(___col____r)) <> 0 AND"
-            )
+            empty_check = "LEAST(ARRAY_SIZE(___col____l), ARRAY_SIZE(___col____r)) <> 0 AND"
 
         sqlglot_base_dialect_sql = f"""
             {empty_check}
             ARRAY_SIZE(ARRAY_INTERSECT(___col____l, ___col____r)) =
             LEAST(ARRAY_SIZE(___col____l), ARRAY_SIZE(___col____r))
             """
-        translated = _translate_sql_string(
-            sqlglot_base_dialect_sql, sqlglot_dialect_name
-        )
+        translated = _translate_sql_string(sqlglot_base_dialect_sql, sqlglot_dialect_name)
 
         self.col_expression.sql_dialect = sql_dialect
         col = self.col_expression
@@ -1051,10 +1010,7 @@ class PercentageDifferenceLevel(ComparisonLevelCreator):
 
     def create_label_for_charts(self) -> str:
         col = self.col_expression
-        return (
-            f"Percentage difference of '{col.label}' "
-            f"within {self.percentage_threshold:,.2%}"
-        )
+        return f"Percentage difference of '{col.label}' " f"within {self.percentage_threshold:,.2%}"
 
 
 class AbsoluteDifferenceLevel(ComparisonLevelCreator):

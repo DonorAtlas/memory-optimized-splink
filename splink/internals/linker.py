@@ -552,6 +552,7 @@ class Linker:
             unique_id_input_columns=uid_cols,
             core_model_settings=self._settings_obj.core_model_settings,
             sql_infinity_expression=self._infinity_expression,
+            tf_table_name="__splink__df_concat_with_tf",
         )
         for sql_info in sql_infos:
             output_table_name = sql_info["output_table_name"]

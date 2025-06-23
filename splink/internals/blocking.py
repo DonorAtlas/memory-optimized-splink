@@ -236,16 +236,12 @@ class BlockingRule:
         uid_l_expr = _composite_unique_id_from_nodes_sql(unique_id_columns, "l")
         uid_r_expr = _composite_unique_id_from_nodes_sql(unique_id_columns, "r")
         sql = f"""
-            WITH sorted AS (
-            SELECT {cols_to_select},
-            FROM {input_tablename_r}
-            )
             select
             '{self.match_key}' as match_key,
             {uid_l_expr} as join_key_l,
             {uid_r_expr} as join_key_r
-            from sorted as l
-            join sorted as r
+            from {input_tablename_l} as l
+            join {input_tablename_r} as r
             on
             ({self.blocking_rule_sql})
             {where_condition}

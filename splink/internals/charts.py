@@ -30,9 +30,7 @@ def _load_external_libs():
     return {k: read_resource(v) for k, v in to_load.items()}
 
 
-def altair_or_json(
-    chart_dict: dict[Any, Any], as_dict: bool = False
-) -> ChartReturnType:
+def altair_or_json(chart_dict: dict[Any, Any], as_dict: bool = False) -> ChartReturnType:
     if not as_dict:
         return Chart.from_dict(chart_dict)
 
@@ -47,9 +45,7 @@ IFrame(src="./{filename}", width=1000, height=500)
 """
 
 
-def save_offline_chart(
-    chart_dict, filename="my_chart.html", overwrite=False, print_msg=True
-):
+def save_offline_chart(chart_dict, filename="my_chart.html", overwrite=False, print_msg=True):
     """Save Splink charting outputs to disk as a standalone .html file
     which works offline
 
@@ -63,9 +59,7 @@ def save_offline_chart(
     """
 
     if os.path.isfile(filename) and not overwrite:
-        raise ValueError(
-            f"The path {filename} already exists. Please provide a different path."
-        )
+        raise ValueError(f"The path {filename} already exists. Please provide a different path.")
 
     if type(chart_dict).__name__ == "VegaliteNoValidate":
         chart_dict = chart_dict.spec
@@ -190,7 +184,7 @@ def m_u_parameters_interactive_history_chart(records, as_dict=False):
 def waterfall_chart(
     records,
     settings_obj,
-    filter_nulls=True,
+    filter_nulls=False,
     remove_sensitive_data=False,
     as_dict=False,
 ):
@@ -270,9 +264,9 @@ def accuracy_chart(records, width=400, height=400, as_dict=False, add_metrics=[]
     chart["transform"][2]["calculate"] = chart["transform"][2]["calculate"].replace(
         "__mapping__", str(mapping)
     )
-    chart["layer"][0]["encoding"]["color"]["legend"]["labelExpr"] = chart["layer"][0][
-        "encoding"
-    ]["color"]["legend"]["labelExpr"].replace("__mapping__", str(mapping))
+    chart["layer"][0]["encoding"]["color"]["legend"]["labelExpr"] = chart["layer"][0]["encoding"]["color"][
+        "legend"
+    ]["labelExpr"].replace("__mapping__", str(mapping))
 
     chart["data"]["values"] = records
 
@@ -293,9 +287,9 @@ def threshold_selection_tool(records, as_dict=False, add_metrics=[]):
     metrics = ["precision", "recall", *add_metrics]
 
     chart["hconcat"][1]["transform"][0]["fold"] = metrics
-    chart["hconcat"][1]["transform"][1]["calculate"] = chart["hconcat"][1]["transform"][
-        1
-    ]["calculate"].replace("__metrics__", str(metrics))
+    chart["hconcat"][1]["transform"][1]["calculate"] = chart["hconcat"][1]["transform"][1][
+        "calculate"
+    ].replace("__metrics__", str(metrics))
     chart["hconcat"][1]["layer"][0]["encoding"]["color"]["sort"] = metrics
     chart["hconcat"][1]["layer"][1]["layer"][1]["encoding"]["color"]["sort"] = metrics
 
@@ -312,14 +306,12 @@ def threshold_selection_tool(records, as_dict=False, add_metrics=[]):
         "p4": "P4",
         "phi": "\u03c6 (MCC)",
     }
-    chart["hconcat"][1]["transform"][2]["calculate"] = chart["hconcat"][1]["transform"][
-        2
-    ]["calculate"].replace("__mapping__", str(mapping))
-    chart["hconcat"][1]["layer"][0]["encoding"]["color"]["legend"]["labelExpr"] = chart[
-        "hconcat"
-    ][1]["layer"][0]["encoding"]["color"]["legend"]["labelExpr"].replace(
-        "__mapping__", str(mapping)
-    )
+    chart["hconcat"][1]["transform"][2]["calculate"] = chart["hconcat"][1]["transform"][2][
+        "calculate"
+    ].replace("__mapping__", str(mapping))
+    chart["hconcat"][1]["layer"][0]["encoding"]["color"]["legend"]["labelExpr"] = chart["hconcat"][1][
+        "layer"
+    ][0]["encoding"]["color"]["legend"]["labelExpr"].replace("__mapping__", str(mapping))
 
     chart["data"]["values"] = records
 
@@ -368,41 +360,27 @@ def unlinkables_chart(
     as_dict=False,
 ):
     if x_col not in ["match_weight", "match_probability"]:
-        raise ValueError(
-            f"{x_col} must be 'match_weight' (default) or 'match_probability'."
-        )
+        raise ValueError(f"{x_col} must be 'match_weight' (default) or 'match_probability'.")
 
     chart_path = "unlinkables_chart_def.json"
     unlinkables_chart_def = load_chart_definition(chart_path)
     unlinkables_chart_def["data"]["values"] = records
 
     if x_col == "match_probability":
-        unlinkables_chart_def["layer"][0]["encoding"]["x"]["field"] = (
-            "match_probability"
-        )
-        unlinkables_chart_def["layer"][0]["encoding"]["x"]["axis"]["title"] = (
-            "Threshold match probability"
-        )
+        unlinkables_chart_def["layer"][0]["encoding"]["x"]["field"] = "match_probability"
+        unlinkables_chart_def["layer"][0]["encoding"]["x"]["axis"]["title"] = "Threshold match probability"
         unlinkables_chart_def["layer"][0]["encoding"]["x"]["axis"]["format"] = ".2"
 
-        unlinkables_chart_def["layer"][1]["encoding"]["x"]["field"] = (
-            "match_probability"
-        )
+        unlinkables_chart_def["layer"][1]["encoding"]["x"]["field"] = "match_probability"
         unlinkables_chart_def["layer"][1]["selection"]["selector112"]["fields"] = [
             "match_probability",
             "cum_prop",
         ]
 
-        unlinkables_chart_def["layer"][2]["encoding"]["x"]["field"] = (
-            "match_probability"
-        )
-        unlinkables_chart_def["layer"][2]["encoding"]["x"]["axis"]["title"] = (
-            "Threshold match probability"
-        )
+        unlinkables_chart_def["layer"][2]["encoding"]["x"]["field"] = "match_probability"
+        unlinkables_chart_def["layer"][2]["encoding"]["x"]["axis"]["title"] = "Threshold match probability"
 
-        unlinkables_chart_def["layer"][3]["encoding"]["x"]["field"] = (
-            "match_probability"
-        )
+        unlinkables_chart_def["layer"][3]["encoding"]["x"]["field"] = "match_probability"
 
     if source_dataset:
         unlinkables_chart_def["title"]["text"] += f" - {source_dataset}"

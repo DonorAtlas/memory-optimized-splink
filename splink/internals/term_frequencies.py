@@ -30,22 +30,60 @@ def colname_to_tf_tablename(input_column: InputColumn) -> str:
     return f"__splink__df_tf_{column_name_str}"
 
 
-def term_frequencies_for_single_column_sql(
-    input_column: InputColumn, table_name: str = "__splink__df_concat"
-) -> str:
+def term_frequencies_for_single_column_sqls(
+    input_column: InputColumn,
+    tf_table_name: str,
+    table_name: str = "__splink__df_concat",
+    is_array_column: bool = False,
+) -> list[dict[str, str]]:
+    col_name_unquoted = input_column.unquote().name
     col_name = input_column.name
+    logger.info(f"Computing tf for {col_name} with is_array_column: {is_array_column}")
+    sqls = []
 
-    sql = f"""
-    select
-    {col_name}, cast(count(*) as float8) / (select
-        count({col_name}) as total from {table_name})
-            as {input_column.tf_name}
-    from {table_name}
-    where {col_name} is not null
-    group by {col_name}
-    """
+    if is_array_column:
+        exploded_table_name = f"__splink_tf_df_{col_name_unquoted}_exploded"
+        explode_sql = f"""
+            SELECT
+                val     AS term
+            FROM {table_name} AS c
+            CROSS JOIN UNNEST(c.{col_name}) AS val
+            WHERE c.{col_name} IS NOT NULL
+        """
+        sqls.append({"sql": explode_sql, "output_table_name": exploded_table_name})
 
-    return sql
+        total_terms_table_name = f"__splink_tf_df_{col_name}_total_terms"
+        total_terms_sql = f"""
+            SELECT 
+                COUNT(*) AS total_unnested
+            FROM {exploded_table_name}
+        """
+        sqls.append({"sql": total_terms_sql, "output_table_name": total_terms_table_name})
+
+        freqs_sql = f"""
+            SELECT
+                e.term.unnest as term,
+                COUNT(*)::FLOAT8
+                / ANY_VALUE(t.total_unnested) AS tf_value
+            FROM {exploded_table_name} AS e
+            CROSS JOIN {total_terms_table_name} AS t
+            GROUP BY e.term
+        """
+        sqls.append({"sql": freqs_sql, "output_table_name": tf_table_name})
+
+    else:
+        sql = f"""
+        select
+        {col_name}, cast(count(*) as float8) / (select
+            count({col_name}) as total from {table_name})
+                as {input_column.tf_name}
+        from {table_name}
+        where {col_name} is not null
+        group by {col_name}
+        """
+        sqls.append({"sql": sql, "output_table_name": tf_table_name})
+
+    return sqls
 
 
 def _join_tf_to_df_concat_sql(linker: Linker) -> str:
@@ -55,14 +93,14 @@ def _join_tf_to_df_concat_sql(linker: Linker) -> str:
     select_cols = []
 
     for col in tf_cols:
+        if col.is_array_column:
+            continue
         tbl = colname_to_tf_tablename(col)
         select_cols.append(f"{tbl}.{col.tf_name}")
 
     column_names_in_df_concat = linker._concat_table_column_names
 
-    aliased_concat_column_names = [
-        f"__splink__df_concat.{col} AS {col}" for col in column_names_in_df_concat
-    ]
+    aliased_concat_column_names = [f"__splink__df_concat.{col} AS {col}" for col in column_names_in_df_concat]
 
     select_cols = aliased_concat_column_names + select_cols
     select_cols_str = ", ".join(select_cols)
@@ -71,6 +109,8 @@ def _join_tf_to_df_concat_sql(linker: Linker) -> str:
 
     left_joins = []
     for col in tf_cols:
+        if col.is_array_column:
+            continue
         tbl = colname_to_tf_tablename(col)
         sql = templ.format(tbl=tbl, col=col.name)
         left_joins.append(sql)
@@ -102,9 +142,7 @@ def _join_new_table_to_df_concat_with_tf_sql(
 
     if input_table is not None:
         tf_cols_already_populated = [
-            c.unquote().name
-            for c in input_table.columns
-            if c.unquote().name.startswith("tf_")
+            c.unquote().name for c in input_table.columns if c.unquote().name.startswith("tf_")
         ]
     tf_cols_not_already_populated = [
         c
@@ -122,9 +160,7 @@ def _join_new_table_to_df_concat_with_tf_sql(
             select_cols.append(f"{tbl}.{col.tf_name}")
 
     template = "left join {tbl} on " + input_tablename + ".{col} = {tbl}.{col}"
-    template_with_alias = (
-        "left join ({subquery}) as {_as} on " + input_tablename + ".{col} = {_as}.{col}"
-    )
+    template_with_alias = "left join ({subquery}) as {_as} on " + input_tablename + ".{col} = {_as}.{col}"
 
     left_joins = []
     for i, col in enumerate(tf_cols_not_already_populated):
@@ -156,9 +192,7 @@ def _join_new_table_to_df_concat_with_tf_sql(
     return sql
 
 
-def compute_all_term_frequencies_sqls(
-    linker: Linker, pipeline: CTEPipeline
-) -> list[dict[str, str]]:
+def compute_all_term_frequencies_sqls(linker: Linker, pipeline: CTEPipeline) -> list[dict[str, str]]:
     settings_obj = linker._settings_obj
     tf_cols = settings_obj._term_frequency_columns
 
@@ -173,15 +207,18 @@ def compute_all_term_frequencies_sqls(
     sqls = []
     cache = linker._intermediate_table_cache
     for tf_col in tf_cols:
+        if tf_col.is_array_column:
+            continue
         tf_table_name = colname_to_tf_tablename(tf_col)
 
         if tf_table_name in cache:
             tf_table = cache.get_with_logging(tf_table_name)
             pipeline.append_input_dataframe(tf_table)
         else:
-            sql = term_frequencies_for_single_column_sql(tf_col)
-            sql_info = {"sql": sql, "output_table_name": tf_table_name}
-            sqls.append(sql_info)
+            sqls = term_frequencies_for_single_column_sqls(
+                tf_col, is_array_column=tf_col.is_array_column, tf_table_name=tf_table_name
+            )
+            sqls.extend(sqls)
 
     sql = _join_tf_to_df_concat_sql(linker)
     sql_info = {
@@ -203,8 +240,7 @@ def comparison_level_to_tf_chart_data(cl: dict[str, Any]) -> dict[str, Any]:
 
     # TF match weight scaled by tf_adjustment_weight
     df.loc[:, "log2_bf_tf"] = (
-        log2(df.loc[:, "u_probability"] / df.loc[:, "tf"])
-        * df.loc[:, "tf_adjustment_weight"]
+        log2(df.loc[:, "u_probability"] / df.loc[:, "tf"]) * df.loc[:, "tf_adjustment_weight"]
     )
 
     # Tidy up columns
@@ -222,9 +258,7 @@ def comparison_level_to_tf_chart_data(cl: dict[str, Any]) -> dict[str, Any]:
     # Add ranks for sorting/selecting
     df = df.sort_values("log2_bf_tf")
     df["most_freq_rank"] = df.groupby("gamma", observed=False)["log2_bf_tf"].cumcount()
-    df["least_freq_rank"] = df.groupby("gamma", observed=False)["log2_bf_tf"].cumcount(
-        ascending=False
-    )
+    df["least_freq_rank"] = df.groupby("gamma", observed=False)["log2_bf_tf"].cumcount(ascending=False)
 
     cl["df_out"] = df
 
@@ -249,6 +283,7 @@ def tf_adjustment_chart(
         "tf_adjustment_column",
         "tf_adjustment_weight",
         "tf_minimum_u_value",
+        "tf_col_is_array",
         "u_probability",
         "log2_bayes_factor",
     ]
@@ -281,9 +316,7 @@ def tf_adjustment_chart(
     most_freq = True if not n_most_freq else df["most_freq_rank"] < n_most_freq
     mask = selected | least_freq | most_freq
 
-    vals_not_included = [
-        val for val in vals_to_include if val not in df["value"].values
-    ]
+    vals_not_included = [val for val in vals_to_include if val not in df["value"].values]
     if vals_not_included:
         warnings.warn(
             f"Values {vals_not_included} from `vals_to_include` were not found in "
@@ -322,9 +355,7 @@ def tf_adjustment_chart(
 
     # Complete chart schema
     tf_levels = [cl["comparison_vector_value"] for cl in c]
-    labels = [
-        f'{cl["label_for_charts"]} (TF col: {cl["tf_adjustment_column"]})' for cl in c
-    ]
+    labels = [f'{cl["label_for_charts"]} (TF col: {cl["tf_adjustment_column"]})' for cl in c]
 
     df = df[df["gamma"].isin(tf_levels)].sort_values("least_freq_rank")
 

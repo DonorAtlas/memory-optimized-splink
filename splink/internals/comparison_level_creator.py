@@ -29,6 +29,7 @@ UnsuppliedNoneOr = Union[T, _UnsuppliedOption, None]
 class ComparisonLevelCreator(ABC):
     # off by default - only a small subset should have tf adjustments
     term_frequency_adjustments = False
+    only_help = False
 
     @abstractmethod
     def create_sql(self, sql_dialect: SplinkDialect) -> str:
@@ -77,11 +78,13 @@ class ComparisonLevelCreator(ABC):
         tf_adjustment_column: UnsuppliedNoneOr[str] = unsupplied_option,
         tf_adjustment_weight: UnsuppliedNoneOr[float] = unsupplied_option,
         tf_minimum_u_value: UnsuppliedNoneOr[float] = unsupplied_option,
+        tf_col_is_array: UnsuppliedNoneOr[bool] = unsupplied_option,
         is_null_level: UnsuppliedNoneOr[bool] = unsupplied_option,
         label_for_charts: UnsuppliedNoneOr[str] = unsupplied_option,
         disable_tf_exact_match_detection: UnsuppliedNoneOr[bool] = unsupplied_option,
         fix_m_probability: UnsuppliedNoneOr[bool] = unsupplied_option,
         fix_u_probability: UnsuppliedNoneOr[bool] = unsupplied_option,
+        only_help: UnsuppliedNoneOr[bool] = unsupplied_option,
     ) -> "ComparisonLevelCreator":
         """
         Configure the comparison level with options which are common to all
@@ -118,6 +121,10 @@ class ComparisonLevelCreator(ABC):
                 turned on, where the term frequency adjustment implies a u value below
                 this value, use this minimum value instead.
                 Defaults is equivalent to None, meaning no minimum value.
+            tf_col_is_array (bool, optional): If true, the term frequency adjustment
+                column is an array.
+                Default is equivalent to None, meaning the term frequency adjustment
+                column is not an array.
             is_null_level (bool, optional): If true, m and u values will not be
                 estimated and instead the match weight will be zero for this column.
                 Default is equivalent to False.
@@ -135,6 +142,9 @@ class ComparisonLevelCreator(ABC):
                 Default is equivalent to False.
             fix_u_probability (bool, optional): If true, the u probability for this
                 level will be fixed and not estimated during training.
+                Default is equivalent to False.
+            only_help (bool, optional): If true, the comparison level will be manipulated
+                to never negatively impact the match probability.
                 Default is equivalent to False.
         Returns:
             ComparisonLevelCreator: The instance of the ComparisonLevelCreator class

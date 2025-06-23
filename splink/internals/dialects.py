@@ -44,9 +44,7 @@ class SplinkDialect(ABC):
         # list of classes which match _dialect_name_for_factory
         # should just get a single subclass, as this should be unique
         classes_from_dialect_name = [
-            c
-            for c in cls.__subclasses__()
-            if getattr(c, "_dialect_name_for_factory", None) == dialect_name
+            c for c in cls.__subclasses__() if getattr(c, "_dialect_name_for_factory", None) == dialect_name
         ]
         # use sequence unpacking to catch if we duplicate
         # _dialect_name_for_factory in subclasses
@@ -64,90 +62,71 @@ class SplinkDialect(ABC):
         # or _no_ subclasses found
         else:
             error_message = (
-                "Could not find subclass of `SplinkDialect` with "
-                f"lookup string '{dialect_name}'."
+                "Could not find subclass of `SplinkDialect` with " f"lookup string '{dialect_name}'."
             )
         raise ValueError(error_message)
 
     @property
     def levenshtein_function_name(self):
         raise NotImplementedError(
-            f"Backend '{self.sql_dialect_str}' does not have a "
-            "'Levenshtein' function"
+            f"Backend '{self.sql_dialect_str}' does not have a " "'Levenshtein' function"
         )
 
     @property
     def damerau_levenshtein_function_name(self):
         raise NotImplementedError(
-            f"Backend '{self.sql_dialect_str}' does not have a "
-            "'Damerau-Levenshtein' function"
+            f"Backend '{self.sql_dialect_str}' does not have a " "'Damerau-Levenshtein' function"
         )
 
     @property
     def jaro_winkler_function_name(self):
         raise NotImplementedError(
-            f"Backend '{self.sql_dialect_str}' does not have a "
-            "'Jaro-Winkler' function"
+            f"Backend '{self.sql_dialect_str}' does not have a " "'Jaro-Winkler' function"
         )
 
     @property
     def jaro_function_name(self):
-        raise NotImplementedError(
-            f"Backend '{self.sql_dialect_str}' does not have a 'Jaro' function"
-        )
+        raise NotImplementedError(f"Backend '{self.sql_dialect_str}' does not have a 'Jaro' function")
 
     @property
     def jaccard_function_name(self):
-        raise NotImplementedError(
-            f"Backend '{self.sql_dialect_str}' does not have a 'Jaccard' function"
-        )
+        raise NotImplementedError(f"Backend '{self.sql_dialect_str}' does not have a 'Jaccard' function")
 
     @property
     def cosine_similarity_function_name(self):
         raise NotImplementedError(
-            f"Backend '{self.sql_dialect_str}' does not have a "
-            "'Cosine Similarity' function"
+            f"Backend '{self.sql_dialect_str}' does not have a " "'Cosine Similarity' function"
         )
 
     @property
     def array_max_function_name(self):
-        raise NotImplementedError(
-            f"Backend '{self.sql_dialect_str}' does not have an 'Array max' function"
-        )
+        raise NotImplementedError(f"Backend '{self.sql_dialect_str}' does not have an 'Array max' function")
 
     @property
     def array_min_function_name(self):
-        raise NotImplementedError(
-            f"Backend '{self.sql_dialect_str}' does not have an 'Array min' function"
-        )
+        raise NotImplementedError(f"Backend '{self.sql_dialect_str}' does not have an 'Array min' function")
 
     @property
     def array_transform_function_name(self):
         raise NotImplementedError(
-            f"Backend '{self.sql_dialect_str}' does not have an "
-            "'Array transform' function"
+            f"Backend '{self.sql_dialect_str}' does not have an " "'Array transform' function"
         )
 
     @property
     def array_first_index(self):
         raise NotImplementedError(
-            f"Backend '{self.sql_dialect_str}' does not have a "
-            "first array index defined"
+            f"Backend '{self.sql_dialect_str}' does not have a " "first array index defined"
         )
 
-    def random_sample_sql(
-        self, proportion, sample_size, seed=None, table=None, unique_id=None
-    ):
+    def random_sample_sql(self, proportion, sample_size, seed=None, table=None, unique_id=None):
         raise NotImplementedError(
-            f"Backend '{self.sql_dialect_str}' needs a random_sample_sql "
-            "added to its dialect"
+            f"Backend '{self.sql_dialect_str}' needs a random_sample_sql " "added to its dialect"
         )
 
     @property
     def infinity_expression(self):
         raise NotImplementedError(
-            f"Backend '{self.sql_dialect_str}' needs an infinity_expression "
-            "added to its dialect"
+            f"Backend '{self.sql_dialect_str}' needs an infinity_expression " "added to its dialect"
         )
 
     @staticmethod
@@ -163,8 +142,7 @@ class SplinkDialect(ABC):
 
     def _try_parse_date_raw(self, name: str, date_format: str = None) -> str:
         raise NotImplementedError(
-            f"Backend '{self.sql_dialect_str}' does not have a "
-            "'try_parse_date' function"
+            f"Backend '{self.sql_dialect_str}' does not have a " "'try_parse_date' function"
         )
 
     def try_parse_timestamp(self, name: str, timestamp_format: str = None) -> str:
@@ -172,30 +150,21 @@ class SplinkDialect(ABC):
 
     def _try_parse_timestamp_raw(self, name: str, timestamp_format: str = None) -> str:
         raise NotImplementedError(
-            f"Backend '{self.sql_dialect_str}' does not have a "
-            "'try_parse_timestamp' function"
+            f"Backend '{self.sql_dialect_str}' does not have a " "'try_parse_timestamp' function"
         )
 
     @final
     def regex_extract(self, name: str, pattern: str, capture_group: int = 0) -> str:
-        return self._wrap_in_nullif(self._regex_extract_raw)(
-            name, pattern, capture_group
+        return self._wrap_in_nullif(self._regex_extract_raw)(name, pattern, capture_group)
+
+    def _regex_extract_raw(self, name: str, pattern: str, capture_group: int = 0) -> str:
+        raise NotImplementedError(
+            f"Backend '{self.sql_dialect_str}' does not have a " "'regex_extract' function"
         )
 
-    def _regex_extract_raw(
-        self, name: str, pattern: str, capture_group: int = 0
-    ) -> str:
+    def access_extreme_array_element(self, name: str, first_or_last: Literal["first", "last"]) -> str:
         raise NotImplementedError(
-            f"Backend '{self.sql_dialect_str}' does not have a "
-            "'regex_extract' function"
-        )
-
-    def access_extreme_array_element(
-        self, name: str, first_or_last: Literal["first", "last"]
-    ) -> str:
-        raise NotImplementedError(
-            f"Backend '{self.sql_dialect_str}' does not have an "
-            "'access_extreme_array_element' function"
+            f"Backend '{self.sql_dialect_str}' does not have an " "'access_extreme_array_element' function"
         )
 
     def explode_arrays_sql(
@@ -204,9 +173,7 @@ class SplinkDialect(ABC):
         columns_to_explode: list[str],
         other_columns_to_retain: list[str],
     ) -> str:
-        raise NotImplementedError(
-            f"Unnesting blocking rules are not supported for {type(self)}"
-        )
+        raise NotImplementedError(f"Unnesting blocking rules are not supported for {type(self)}")
 
 
 class DuckDBDialect(SplinkDialect):
@@ -274,20 +241,18 @@ class DuckDBDialect(SplinkDialect):
         clc.col_expression.sql_dialect = self
         col = clc.col_expression
         thres = clc.min_intersection
+        if thres == 1:
+            return f"list_has_any({col.name_l}, {col.name_r})"
         return f"array_length(list_intersect({col.name_l}, {col.name_r})) >= {thres}"
 
-    def _regex_extract_raw(
-        self, name: str, pattern: str, capture_group: int = 0
-    ) -> str:
+    def _regex_extract_raw(self, name: str, pattern: str, capture_group: int = 0) -> str:
         return f"regexp_extract({name}, '{pattern}', {capture_group})"
 
     @property
     def infinity_expression(self):
         return "cast('infinity' as float8)"
 
-    def random_sample_sql(
-        self, proportion, sample_size, seed=None, table=None, unique_id=None
-    ):
+    def random_sample_sql(self, proportion, sample_size, seed=None, table=None, unique_id=None):
         if proportion == 1.0:
             return ""
         percent = proportion * 100
@@ -296,16 +261,13 @@ class DuckDBDialect(SplinkDialect):
         else:
             return f"USING SAMPLE {percent}% (bernoulli)"
 
-    def access_extreme_array_element(
-        self, name: str, first_or_last: Literal["first", "last"]
-    ) -> str:
+    def access_extreme_array_element(self, name: str, first_or_last: Literal["first", "last"]) -> str:
         if first_or_last == "first":
             return f"{name}[{self.array_first_index}]"
         if first_or_last == "last":
             return f"{name}[-1]"
         raise ValueError(
-            f"Argument 'first_or_last' should be 'first' or 'last', "
-            f"received: '{first_or_last}'"
+            f"Argument 'first_or_last' should be 'first' or 'last', " f"received: '{first_or_last}'"
         )
 
     def explode_arrays_sql(
@@ -397,18 +359,14 @@ class SparkDialect(SplinkDialect):
             timestamp_format = self.default_timestamp_format
         return f"""to_timestamp({name}, '{timestamp_format}')"""
 
-    def _regex_extract_raw(
-        self, name: str, pattern: str, capture_group: int = 0
-    ) -> str:
+    def _regex_extract_raw(self, name: str, pattern: str, capture_group: int = 0) -> str:
         return f"regexp_extract({name}, '{pattern}', {capture_group})"
 
     @property
     def infinity_expression(self):
         return "'infinity'"
 
-    def random_sample_sql(
-        self, proportion, sample_size, seed=None, table=None, unique_id=None
-    ):
+    def random_sample_sql(self, proportion, sample_size, seed=None, table=None, unique_id=None):
         if proportion == 1.0:
             return ""
         percent = proportion * 100
@@ -417,16 +375,13 @@ class SparkDialect(SplinkDialect):
         else:
             return f" TABLESAMPLE ({percent} PERCENT) "
 
-    def access_extreme_array_element(
-        self, name: str, first_or_last: Literal["first", "last"]
-    ) -> str:
+    def access_extreme_array_element(self, name: str, first_or_last: Literal["first", "last"]) -> str:
         if first_or_last == "first":
             return f"{name}[{self.array_first_index}]"
         if first_or_last == "last":
             return f"element_at({name}, -1)"
         raise ValueError(
-            f"Argument 'first_or_last' should be 'first' or 'last', "
-            f"received: '{first_or_last}'"
+            f"Argument 'first_or_last' should be 'first' or 'last', " f"received: '{first_or_last}'"
         )
 
     def explode_arrays_sql(
@@ -480,9 +435,7 @@ class SQLiteDialect(SplinkDialect):
     def infinity_expression(self):
         return "'infinity'"
 
-    def random_sample_sql(
-        self, proportion, sample_size, seed=None, table=None, unique_id=None
-    ):
+    def random_sample_sql(self, proportion, sample_size, seed=None, table=None, unique_id=None):
         if proportion == 1.0:
             return ""
         if seed:
@@ -521,9 +474,7 @@ class PostgresDialect(SplinkDialect):
             f"<= {clc.time_threshold_seconds}"
         )
 
-    def _regex_extract_raw(
-        self, name: str, pattern: str, capture_group: int = 0
-    ) -> str:
+    def _regex_extract_raw(self, name: str, pattern: str, capture_group: int = 0) -> str:
         # full match - wrap pattern in parentheses so first group is whole expression
         if capture_group == 0:
             pattern = f"({pattern})"
@@ -561,17 +512,14 @@ class PostgresDialect(SplinkDialect):
         CARDINALITY(ARRAY_INTERSECT({col.name_l}, {col.name_r})) >= {threshold}
         """.strip()
 
-    def random_sample_sql(
-        self, proportion, sample_size, seed=None, table=None, unique_id=None
-    ):
+    def random_sample_sql(self, proportion, sample_size, seed=None, table=None, unique_id=None):
         if proportion == 1.0:
             return ""
         if seed:
             # TODO: we could maybe do seeds by handling it in calling function
             # need to execute setseed() in surrounding session
             raise NotImplementedError(
-                "Postgres does not support seeds in random "
-                "samples. Please remove the `seed` parameter."
+                "Postgres does not support seeds in random " "samples. Please remove the `seed` parameter."
             )
 
         sample_size = int(sample_size)
@@ -588,16 +536,13 @@ class PostgresDialect(SplinkDialect):
     def array_first_index(self):
         return 1
 
-    def access_extreme_array_element(
-        self, name: str, first_or_last: Literal["first", "last"]
-    ) -> str:
+    def access_extreme_array_element(self, name: str, first_or_last: Literal["first", "last"]) -> str:
         if first_or_last == "first":
             return f"{name}[{self.array_first_index}]"
         if first_or_last == "last":
             return f"{name}[array_length({name}, 1)]"
         raise ValueError(
-            f"Argument 'first_or_last' should be 'first' or 'last', "
-            f"received: '{first_or_last}'"
+            f"Argument 'first_or_last' should be 'first' or 'last', " f"received: '{first_or_last}'"
         )
 
 
@@ -616,9 +561,7 @@ class AthenaDialect(SplinkDialect):
     def _levenshtein_name(self):
         return "levenshtein_distance"
 
-    def random_sample_sql(
-        self, proportion, sample_size, seed=None, table=None, unique_id=None
-    ):
+    def random_sample_sql(self, proportion, sample_size, seed=None, table=None, unique_id=None):
         if proportion == 1.0:
             return ""
         percent = proportion * 100

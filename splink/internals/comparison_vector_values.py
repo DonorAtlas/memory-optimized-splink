@@ -53,7 +53,6 @@ def _generage_comparison_metrics_columns(
         cols.extend(cc._columns_to_select_for_em_metrics(retain_matching_columns))
 
     for add_col in additional_columns_to_retain:
-        logger.info(f"add_col: {add_col}")
         cols.extend(add_col.names_l_r)
 
     if needs_matchkey_column:

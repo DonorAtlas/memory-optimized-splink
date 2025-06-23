@@ -134,11 +134,13 @@ class ComparisonLevel:
         tf_adjustment_column: str = None,
         tf_adjustment_weight: float = 1.0,
         tf_minimum_u_value: float = 0.0,
+        tf_col_is_array: bool = False,
         m_probability: float = None,
         u_probability: float = None,
         disable_tf_exact_match_detection: bool = False,
         fix_m_probability: bool = False,
         fix_u_probability: bool = False,
+        only_help: bool = False,
     ):
         self.sqlglot_dialect = sqlglot_dialect
 
@@ -149,6 +151,7 @@ class ComparisonLevel:
         self._tf_adjustment_column = tf_adjustment_column
         self._tf_adjustment_weight = tf_adjustment_weight
         self._tf_minimum_u_value = tf_minimum_u_value
+        self._tf_col_is_array = tf_col_is_array
         self._disable_tf_exact_match_detection = disable_tf_exact_match_detection
 
         # internally these can be LEVEL_NOT_OBSERVED_TEXT, so allow for this
@@ -159,6 +162,7 @@ class ComparisonLevel:
 
         self._fix_m_probability = fix_m_probability
         self._fix_u_probability = fix_u_probability
+        self._only_help = only_help
 
         # TODO: control this in comparison getter setter ?
         # These will be set when the ComparisonLevel is passed into a Comparison
@@ -187,15 +191,17 @@ class ComparisonLevel:
         return self._disable_tf_exact_match_detection
 
     @property
+    def only_help(self) -> bool:
+        return self._only_help
+
+    @property
     def sql_condition(self) -> str:
         return self._sql_condition
 
     @property
     def parsed_sql_condition(self):
         expression = sqlglot.parse_one(self.sql_condition)
-
         mapping = {}
-        counter = [0]
 
         def replace_complex_expressions(expr):
             # If it's a complex expression (function, lambda, case, etc.)
@@ -206,8 +212,7 @@ class ComparisonLevel:
                 # Using a deterministic hash based on the expression string
                 # This ensures the same expression always gets the same hash
                 hash_id = hashlib.md5(expr_str.encode()).hexdigest()[:8]
-                col_name = f"__{'_'.join(sorted([col.input_name for col in self._input_columns_used_by_sql_condition]))}_{counter[0]}_{hash_id}"
-                counter[0] += 1
+                col_name = f"__{'_'.join(sorted([col.input_name for col in self._input_columns_used_by_sql_condition]))}_{hash_id}"
                 mapping[col_name] = expr_str
                 return sqlglot.exp.Identifier(this=col_name)
             return expr
@@ -223,7 +228,9 @@ class ComparisonLevel:
     def _tf_adjustment_input_column(self):
         val = self._tf_adjustment_column
         if val:
-            return InputColumn(val, sqlglot_dialect_str=self.sqlglot_dialect)
+            return InputColumn(
+                val, sqlglot_dialect_str=self.sqlglot_dialect, is_array_column=self._tf_col_is_array
+            )
         else:
             return None
 
@@ -457,7 +464,6 @@ class ComparisonLevel:
     @property
     def _input_columns_used_by_sql_condition(self) -> list[InputColumn]:
         # returns e.g. InputColumn(first_name), InputColumn(surname)
-
         if self._is_else_level:
             return []
 
@@ -487,6 +493,8 @@ class ComparisonLevel:
         for c in cols:
             output_cols.extend(c.l_r_names_as_l_r)
             if self._tf_adjustment_input_column:
+                if self._tf_col_is_array:
+                    continue
                 output_cols.extend(self._tf_adjustment_input_column.l_r_tf_names_as_l_r)
 
         return dedupe_preserving_order(output_cols)
@@ -572,7 +580,11 @@ class ComparisonLevel:
         """
         return dedent(sql)
 
-    def _tf_adjustment_sql(self, gamma_column_name: str, comparison_levels: list[ComparisonLevel]) -> str:
+    def _tf_adjustment_sql(
+        self,
+        gamma_column_name: str,
+        comparison_levels: list[ComparisonLevel],
+    ) -> str:
         gamma_colname_value_is_this_level = f"{gamma_column_name} = {self.comparison_vector_value}"
 
         # A tf adjustment of 1D is a multiplier of 1.0, i.e. no adjustment
@@ -586,53 +598,92 @@ class ComparisonLevel:
             sql = f"WHEN  {gamma_colname_value_is_this_level} then cast(1 as float8)"
         else:
             tf_adj_col = self._tf_adjustment_input_column
+            tf_col_is_array = self._tf_col_is_array
+            if not tf_adj_col:
+                sql = ""
 
-            coalesce_l_r = f"coalesce({tf_adj_col.tf_name_l}, {tf_adj_col.tf_name_r})"
-            coalesce_r_l = f"coalesce({tf_adj_col.tf_name_r}, {tf_adj_col.tf_name_l})"
+            elif tf_col_is_array:
+                array_l = f"{tf_adj_col.name_l}"
+                array_r = f"{tf_adj_col.name_r}"
 
-            tf_adjustment_exists = f"{coalesce_l_r} is not null"
-            u_prob_exact_match = self._u_probability_corresponding_to_exact_match(comparison_levels)
+                # 1) existence = non-empty intersection of base arrays
+                # TODO: @aberdeenmorrow make this work with any array selection based on the cl
+                tf_adjustment_exists = f"ARRAY_LENGTH(ARRAY_INTERSECT({array_l}, {array_r})) > 0"
+                # TODO: this requires tf tables to be registered without hashes or some lookup with the db to get physical names. Perhaps pass a param through the Comparison?
+                tf_table_name = f"__splink__df_tf_{tf_adj_col.unquote().name.replace(' ', '_')}"
 
-            # Using coalesce protects against one of the tf adjustments being null
-            # Which would happen if the user provided their own tf adjustment table
-            # That didn't contain some of the values in this data
+                # 2) for each side, pull max(tf) over just the intersected terms
+                min_tf_of_intersection_sql = f"""(
+                    SELECT MIN(tf.tf_value)
+                    FROM UNNEST(array_intersect({array_l}, {array_r})) AS t(term)
+                    JOIN {tf_table_name} AS tf
+                    ON tf.term = t.term
+                )"""
 
-            # In this case rather than taking the greater of the two, we take
-            # whichever value exists
+                # 3) coalesce-compare logic, just like your scalar branch
+                if self._tf_minimum_u_value == 0.0:
+                    divisor_sql = min_tf_of_intersection_sql
+                else:
+                    divisor_sql = f"""GREATEST({min_tf_of_intersection_sql}, cast({self._tf_minimum_u_value} as float8))"""
 
-            if self._tf_minimum_u_value == 0.0:
-                divisor_sql = f"""
-                (CASE
-                    WHEN {coalesce_l_r} >= {coalesce_r_l}
-                    THEN {coalesce_l_r}
-                    ELSE {coalesce_r_l}
-                END)
-                """
+                # 4) final WHEN…THEN clause
+                sql = f"""WHEN {gamma_colname_value_is_this_level} THEN
+                (CASE 
+                    WHEN {tf_adjustment_exists}
+                    THEN POW(
+                        cast({self._u_probability_corresponding_to_exact_match(comparison_levels)} as float8) / {divisor_sql},
+                        cast({self._tf_adjustment_weight} as float8)
+                    )
+                    ELSE cast(1 as float8)
+                END)"""
+
             else:
-                # This sql works correctly even when the tf_minimum_u_value is 0.0
-                # but is less efficient to execute, hence the above if statement
-                divisor_sql = f"""
-                (CASE
-                    WHEN {coalesce_l_r} >= {coalesce_r_l}
-                    AND {coalesce_l_r} > cast({self._tf_minimum_u_value} as float8)
-                        THEN {coalesce_l_r}
-                    WHEN {coalesce_r_l}  > cast({self._tf_minimum_u_value} as float8)
-                        THEN {coalesce_r_l}
-                    ELSE cast({self._tf_minimum_u_value} as float8)
-                END)
-                """
+                coalesce_l_r = f"coalesce({tf_adj_col.tf_name_l}, {tf_adj_col.tf_name_r})"
+                coalesce_r_l = f"coalesce({tf_adj_col.tf_name_r}, {tf_adj_col.tf_name_l})"
 
-            sql = f"""
-            WHEN  {gamma_colname_value_is_this_level} then
-                (CASE WHEN {tf_adjustment_exists}
-                THEN
-                POW(
-                    cast({u_prob_exact_match} as float8) /{divisor_sql},
-                    cast({self._tf_adjustment_weight} as float8)
-                )
-                ELSE cast(1 as float8)
-                END)
-            """
+                tf_adjustment_exists = f"{coalesce_l_r} is not null"
+                u_prob_exact_match = self._u_probability_corresponding_to_exact_match(comparison_levels)
+
+                # Using coalesce protects against one of the tf adjustments being null
+                # Which would happen if the user provided their own tf adjustment table
+                # That didn't contain some of the values in this data
+
+                # In this case rather than taking the greater of the two, we take
+                # whichever value exists
+
+                if self._tf_minimum_u_value == 0.0:
+                    divisor_sql = f"""
+                    (CASE
+                        WHEN {coalesce_l_r} >= {coalesce_r_l}
+                        THEN {coalesce_l_r}
+                        ELSE {coalesce_r_l}
+                    END)
+                    """
+                else:
+                    # This sql works correctly even when the tf_minimum_u_value is 0.0
+                    # but is less efficient to execute, hence the above if statement
+                    divisor_sql = f"""
+                    (CASE
+                        WHEN {coalesce_l_r} >= {coalesce_r_l}
+                        AND {coalesce_l_r} > cast({self._tf_minimum_u_value} as float8)
+                            THEN {coalesce_l_r}
+                        WHEN {coalesce_r_l}  > cast({self._tf_minimum_u_value} as float8)
+                            THEN {coalesce_r_l}
+                        ELSE cast({self._tf_minimum_u_value} as float8)
+                    END)
+                    """
+
+                sql = f"""
+                WHEN  {gamma_colname_value_is_this_level} then
+                    (CASE WHEN {tf_adjustment_exists}
+                    THEN
+                    POW(
+                        cast({u_prob_exact_match} as float8) /{divisor_sql},
+                        cast({self._tf_adjustment_weight} as float8)
+                    )
+                    ELSE cast(1 as float8)
+                    END)
+                """
         return dedent(sql).strip()
 
     def as_dict(self):
@@ -659,12 +710,17 @@ class ComparisonLevel:
                 output["tf_minimum_u_value"] = self._tf_minimum_u_value
             if self._tf_adjustment_weight != 0:
                 output["tf_adjustment_weight"] = self._tf_adjustment_weight
+            if self._tf_col_is_array:
+                output["tf_col_is_array"] = self._tf_col_is_array
 
         if self.is_null_level:
             output["is_null_level"] = True
 
         if self._disable_tf_exact_match_detection:
             output["disable_tf_exact_match_detection"] = True
+
+        if self._only_help:
+            output["only_help"] = True
 
         return output
 
@@ -691,6 +747,7 @@ class ComparisonLevel:
         output["has_tf_adjustments"] = self._has_tf_adjustments
         if self._has_tf_adjustments:
             output["tf_adjustment_column"] = self._tf_adjustment_input_column.input_name
+            output["tf_col_is_array"] = self._tf_col_is_array
         else:
             output["tf_adjustment_column"] = None
         output["tf_adjustment_weight"] = self._tf_adjustment_weight

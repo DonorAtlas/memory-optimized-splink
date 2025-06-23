@@ -172,20 +172,6 @@ class EMTrainingSession:
         nodes_with_tf = compute_df_concat_with_tf(self._original_linker, pipeline)
 
         orig_settings = self._original_linker._settings_obj
-
-        join_key_col_name = f"__join_key_{orig_settings._cache_uid}"
-        join_key_col = _composite_unique_id_from_nodes_sql(
-            [
-                orig_settings.column_info_settings.unique_id_input_column,
-                (
-                    orig_settings.column_info_settings.source_dataset_input_column
-                    if orig_settings.column_info_settings.source_dataset_input_column
-                    else "source_dataset"
-                ),
-            ]
-        )
-        join_key_select = f"{join_key_col} as {join_key_col_name}"
-
         blocking_rule_sql = self._blocking_rule_for_training.blocking_rule_sql
         cols_used_from_br_sql = get_columns_used_from_sql(
             blocking_rule_sql, sqlglot_dialect=self.db_api.sql_dialect.sqlglot_dialect
@@ -201,7 +187,6 @@ class EMTrainingSession:
                         else "source_dataset"
                     ),
                     orig_settings.column_info_settings.unique_id_input_column.input_name,
-                    join_key_select,
                 ]
             )
         )
@@ -222,54 +207,69 @@ class EMTrainingSession:
             blocked_id_pairs_sql, "__splink__blocked_id_pairs"
         )
 
-        # Generate blocked candidates
-        blocked_candidates_sql = compute_blocked_candidates_from_id_pairs_sql(
-            orig_settings._columns_to_select_for_blocking,
-            blocked_pairs_table_name=blocked_pairs.physical_name,
-            df_concat_with_tf_table_name=nodes_with_tf.physical_name,
-            source_dataset_input_column=orig_settings.column_info_settings.source_dataset_input_column,
-            unique_id_input_column=orig_settings.column_info_settings.unique_id_input_column,
-            needs_matchkey_column=False,
-        )
+        try:
+            # Generate blocked candidates
+            blocked_candidates_sql = compute_blocked_candidates_from_id_pairs_sql(
+                orig_settings._columns_to_select_for_blocking,
+                blocked_pairs_table_name=blocked_pairs.physical_name,
+                df_concat_with_tf_table_name=nodes_with_tf.physical_name,
+                source_dataset_input_column=orig_settings.column_info_settings.source_dataset_input_column,
+                unique_id_input_column=orig_settings.column_info_settings.unique_id_input_column,
+                needs_matchkey_column=False,
+            )
 
-        pipeline.enqueue_sql(blocked_candidates_sql, "__splink__df_blocked_candidates")
-        logger.info(f"Computing blocked candidates")
-        blocked_candidates = self.db_api.sql_to_splink_dataframe_checking_cache(
-            blocked_candidates_sql, "__splink__df_blocked_candidates"
-        )
+            pipeline.enqueue_sql(blocked_candidates_sql, "__splink__df_blocked_candidates")
+            logger.info(f"Computing blocked candidates")
+            blocked_candidates = self.db_api.sql_to_splink_dataframe_checking_cache(
+                blocked_candidates_sql, "__splink__df_blocked_candidates"
+            )
+        except Exception as e:
+            logger.error(f"Error generating blocked candidates: {e}")
+            logger.error(f"Blocked candidates sql: {blocked_candidates_sql}")
+            raise e
         # self.db_api.delete_table_from_database(blocked_pairs.physical_name)
 
-        # Generate comparison metrics (with all columns)
-        pipeline = CTEPipeline()
-        logger.info("Generating comparison metrics")
-        comparison_metrics_sql = compute_comparison_metrics_from_blocked_candidates_sql(
-            unique_id_input_columns=self.unique_id_input_columns,
-            comparisons=self.core_model_settings.comparisons,
-            retain_matching_columns=False,
-            additional_columns_to_retain=[],
-            needs_matchkey_column=False,
-            blocked_candidates_table_name=blocked_candidates.physical_name,
-        )
-        pipeline.enqueue_sql(comparison_metrics_sql, "__splink__df_comparison_metrics")
-        logger.info(f"Computing comparison metrics")
-        comparison_metrics = self.db_api.sql_pipeline_to_splink_dataframe(pipeline)
+        try:
+            # Generate comparison metrics (with all columns)
+            pipeline = CTEPipeline()
+            logger.info("Generating comparison metrics")
+            comparison_metrics_sql = compute_comparison_metrics_from_blocked_candidates_sql(
+                unique_id_input_columns=self.unique_id_input_columns,
+                comparisons=self.core_model_settings.comparisons,
+                retain_matching_columns=False,
+                additional_columns_to_retain=[],
+                needs_matchkey_column=False,
+                blocked_candidates_table_name=blocked_candidates.physical_name,
+            )
+            pipeline.enqueue_sql(comparison_metrics_sql, "__splink__df_comparison_metrics")
+            logger.info(f"Computing comparison metrics")
+            comparison_metrics = self.db_api.sql_pipeline_to_splink_dataframe(pipeline)
+        except Exception as e:
+            logger.error(f"Error generating comparison metrics: {e}")
+            logger.error(f"Comparison metrics sql: {comparison_metrics_sql}")
+            raise e
         # self.db_api.delete_table_from_database(blocked_candidates.physical_name)
 
         # Generate comparison vectors
-        pipeline = CTEPipeline()
-        logger.info("Generating comparison vectors")
-        comparison_vectors_sql = compute_comparison_vectors_from_comparison_metrics_sql(
-            comparison_metrics_table_name=comparison_metrics.physical_name,
-            unique_id_input_columns=self.unique_id_input_columns,
-            comparisons=self.core_model_settings.comparisons,
-            retain_matching_columns=False,
-            additional_columns_to_retain=[],
-            needs_matchkey_column=False,
-        )
-        pipeline.enqueue_sql(comparison_vectors_sql, "__splink__df_comparison_vectors")
-        logger.info(f"Computing comparison vector values")
-        comparison_vectors = self.db_api.sql_pipeline_to_splink_dataframe(pipeline)
-        # self.db_api.delete_table_from_database(comparison_metrics.physical_name)
+        try:
+            pipeline = CTEPipeline()
+            logger.info("Generating comparison vectors")
+            comparison_vectors_sql = compute_comparison_vectors_from_comparison_metrics_sql(
+                comparison_metrics_table_name=comparison_metrics.physical_name,
+                unique_id_input_columns=self.unique_id_input_columns,
+                comparisons=self.core_model_settings.comparisons,
+                retain_matching_columns=False,
+                additional_columns_to_retain=[],
+                needs_matchkey_column=False,
+            )
+            pipeline.enqueue_sql(comparison_vectors_sql, "__splink__df_comparison_vectors")
+            logger.info(f"Computing comparison vector values")
+            comparison_vectors = self.db_api.sql_pipeline_to_splink_dataframe(pipeline)
+            # self.db_api.delete_table_from_database(comparison_metrics.physical_name)
+        except Exception as e:
+            logger.error(f"Error generating comparison vectors: {e}")
+            logger.error(f"Comparison vectors sql: {comparison_vectors_sql}")
+            raise e
         return comparison_vectors
 
     def _train(self, cvv: SplinkDataFrame = None) -> CoreModelSettings:

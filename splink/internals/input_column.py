@@ -65,9 +65,7 @@ class SqlglotColumnTreeBuilder:
 
     @property
     def as_sqlglot_tree(self):
-        tree = sqlglot.column(
-            col=self.column_name, table=self.table, quoted=self.quoted
-        )
+        tree = sqlglot.column(col=self.column_name, table=self.table, quoted=self.quoted)
         if self._has_key_or_index:
             tree = self._add_key_or_index_to_tree(tree)
         if self.alias:
@@ -173,18 +171,16 @@ class InputColumn:
         *,
         column_info_settings: ColumnInfoSettings = None,
         sqlglot_dialect_str: str,
+        is_array_column: bool = False,
     ):
         # TODO: the sql_dialect is the sqlglot name.
         # Might need to be more careful with this
         self.column_info_settings = copy(column_info_settings)
-
         self.register_dialect(sqlglot_dialect_str)
 
         # Handle the case that the column name is a sql keyword like 'group'
-        self.input_name: str = self._quote_if_sql_keyword(
-            raw_column_name_or_column_reference
-        )
-
+        self.input_name: str = self._quote_if_sql_keyword(raw_column_name_or_column_reference)
+        self.is_array_column = is_array_column
         self.col_builder: SqlglotColumnTreeBuilder = (
             SqlglotColumnTreeBuilder.from_raw_column_name_or_column_reference(
                 raw_column_name_or_column_reference,
@@ -214,9 +210,7 @@ class InputColumn:
 
     @property
     def _tf_prefix(self):
-        return getattr(
-            self.column_info_settings, "term_frequency_adjustment_column_prefix", "tf_"
-        )
+        return getattr(self.column_info_settings, "term_frequency_adjustment_column_prefix", "tf_")
 
     def unquote(self) -> InputColumn:
         self_copy = copy(self)
