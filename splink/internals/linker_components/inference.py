@@ -212,12 +212,16 @@ class LinkerInference:
         self._set_m_levels_from_only_help()
 
         pipeline = CTEPipeline()
+        df_concat_with_tf_cte = ""
         if (
             materialise_after_computing_term_frequencies
             or self._linker._sql_dialect.sql_dialect_str == "duckdb"
         ):
             df_concat_with_tf = compute_df_concat_with_tf(self._linker, pipeline)
             pipeline = CTEPipeline([df_concat_with_tf])
+            df_concat_with_tf_cte = (
+                f"WITH __splink__df_concat_with_tf AS (select * from {df_concat_with_tf.physical_name})"
+            )
         else:
             pipeline = enqueue_df_concat_with_tf(self._linker, pipeline)
 
@@ -251,6 +255,9 @@ class LinkerInference:
             drop_exploded_tables=True,
         )
 
+        # ------------------------------
+        # Blocking
+        # ------------------------------
         sqls = block_using_rules_sqls(
             input_tablename_l=blocking_input_tablename_l,
             input_tablename_r=blocking_input_tablename_r,
@@ -259,8 +266,18 @@ class LinkerInference:
             source_dataset_input_column=self._linker._settings_obj.column_info_settings.source_dataset_input_column,
             unique_id_input_column=self._linker._settings_obj.column_info_settings.unique_id_input_column,
         )
+        logger.info(f"Blocking SQL: {sqls[0]['sql']}")
+        self._linker._db_api._execute_sql_against_backend(
+            f"""CREATE TABLE {sqls[0]['output_table_name']} AS 
+            {df_concat_with_tf_cte} 
+            {sqls[0]['sql']}"""
+        )
+        table_size = self._linker._db_api._execute_sql_against_backend(
+            f"SELECT COUNT(*) FROM {sqls[0]['output_table_name']}"
+        )
+        logger.info(f"{sqls[0]['output_table_name']} size: {table_size}")
 
-        pipeline.enqueue_list_of_sqls(sqls)
+        # pipeline.enqueue_list_of_sqls(sqls)
 
         if materialise_blocked_pairs:
             blocked_pairs = self._linker._db_api.sql_pipeline_to_splink_dataframe(pipeline)
@@ -273,22 +290,89 @@ class LinkerInference:
         sqls = compute_comparison_vector_values_from_id_pairs_sqls(
             self._linker._settings_obj._columns_to_select_for_blocking,
             self._linker._settings_obj._columns_to_select_for_comparison_vector_values,
-            input_tablename_l="__splink__df_concat_with_tf",
-            input_tablename_r="__splink__df_concat_with_tf",
+            input_tablename_l=df_concat_with_tf.physical_name,
+            input_tablename_r=df_concat_with_tf.physical_name,
             source_dataset_input_column=self._linker._settings_obj.column_info_settings.source_dataset_input_column,
             unique_id_input_column=self._linker._settings_obj.column_info_settings.unique_id_input_column,
         )
-        pipeline.enqueue_list_of_sqls(sqls)
 
+        logger.info(f"Blocked with cols SQL: {sqls[0]['sql']}")
+        # blocked with cols df
+        self._linker._db_api._execute_sql_against_backend(
+            f"CREATE TABLE {sqls[0]['output_table_name']} AS {sqls[0]['sql']}"
+        )
+        table_size = self._linker._db_api._execute_sql_against_backend(
+            f"SELECT COUNT(*) FROM {sqls[0]['output_table_name']}"
+        )
+        logger.info(f"{sqls[0]['output_table_name']} size: {table_size}")
+
+        for col_name in self._linker._settings_obj._tf_array_columns:
+            col = next(
+                (col for col in self._linker._input_columns() if col.input_name == col_name),
+                None,
+            )
+            if not col:
+                continue
+            blocked_with_tf_table_name = f"__splink__blocked_ids_pairs_{col_name}_with_tf"
+            tf_table_name = f"__splink__df_tf_{col_name}"
+
+            sql = f"""WITH {col_name}_tf AS (
+            SELECT
+                unique_id_l,
+                unique_id_r,
+                MIN(tf.tf_value) AS min_tf_{col_name}
+            FROM {sqls[0]['output_table_name']}
+            CROSS JOIN UNNEST(array_intersect({col.name_l}, {col.name_r})) AS t(term)
+            JOIN {tf_table_name} AS tf
+                ON tf.term = t.term
+            GROUP BY unique_id_l, unique_id_r
+            )
+            SELECT * FROM {col_name}_tf"""
+            self._linker._db_api._execute_sql_against_backend(
+                f"CREATE TABLE {blocked_with_tf_table_name} AS {sql}"
+            )
+
+        logger.info(f"Comparison vector SQL: {sqls[1]['sql']}")
+        # comparison_vectors_df
+        self._linker._db_api._execute_sql_against_backend(
+            f"CREATE TABLE {sqls[1]['output_table_name']} AS {sqls[1]['sql']}"
+        )
+        table_size = self._linker._db_api._execute_sql_against_backend(
+            f"SELECT COUNT(*) FROM {sqls[1]['output_table_name']}"
+        )
+        logger.info(f"{sqls[1]['output_table_name']} size: {table_size}")
+
+        # pipeline.enqueue_list_of_sqls(sqls)
         sqls = predict_from_comparison_vectors_sqls_using_settings(
             self._linker._settings_obj,
             threshold_match_probability,
             threshold_match_weight,
             sql_infinity_expression=self._linker._infinity_expression,
         )
-        pipeline.enqueue_list_of_sqls(sqls)
+        logger.info(f"Predict SQL: {sqls[0]['sql']}")
+        # __splink__df_match_weight_parts
+        self._linker._db_api._execute_sql_against_backend(
+            f"CREATE TABLE {sqls[0]['output_table_name']} AS {sqls[0]['sql']}"
+        )
+        table_size = self._linker._db_api._execute_sql_against_backend(
+            f"SELECT COUNT(*) FROM {sqls[0]['output_table_name']}"
+        )
+        logger.info(f"{sqls[0]['output_table_name']} size: {table_size}")
+        logger.info(f"Predict SQL 2: {sqls[1]['sql']}")
+        # __splink__df_predict
+        predictions = self._linker._db_api._execute_sql_against_backend(
+            f"CREATE TABLE {sqls[1]['output_table_name']} AS {sqls[1]['sql']}"
+        )
+        predictions = self._linker._db_api.table_to_splink_dataframe(
+            sqls[1]["output_table_name"], sqls[1]["output_table_name"]
+        )
+        table_size = self._linker._db_api._execute_sql_against_backend(
+            f"SELECT COUNT(*) FROM {sqls[1]['output_table_name']}"
+        )
+        logger.info(f"{sqls[1]['output_table_name']} size: {table_size}")
+        # pipeline.enqueue_list_of_sqls(sqls)
 
-        predictions = self._linker._db_api.sql_pipeline_to_splink_dataframe(pipeline)
+        # predictions = self._linker._db_api.sql_pipeline_to_splink_dataframe(pipeline)
 
         predict_time = time.time() - start_time
         logger.info(f"Predict time: {predict_time:.2f} seconds")

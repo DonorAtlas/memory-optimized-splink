@@ -237,9 +237,9 @@ class Comparison:
         output_cols = []
         if retain_matching_columns:
             for col in input_cols:
-                output_cols.extend(col.names_l_r)
+                output_cols.extend(f"cv.{c}" for c in col.names_l_r)
 
-        output_cols.append(self._gamma_column_name)
+        output_cols.append(f"cv.{self._gamma_column_name}")
 
         if retain_intermediate_calculation_columns:
             for cl in self.comparison_levels:
@@ -247,10 +247,10 @@ class Comparison:
                     col = cl._tf_adjustment_input_column
                     if col is not None and col.is_array_column:
                         continue
-                    output_cols.extend(col.tf_name_l_r)
+                    output_cols.extend(f"cv.{c}" for c in col.tf_name_l_r)
 
         # Bayes factor case when statement
-        sqls = [cl._bayes_factor_sql(self._gamma_column_name) for cl in self.comparison_levels]
+        sqls = [cl._bayes_factor_sql(f"cv.{self._gamma_column_name}") for cl in self.comparison_levels]
         sql = " ".join(sqls)
         sql = f"CASE {sql} END as {self._bf_column_name} "
         output_cols.append(sql)

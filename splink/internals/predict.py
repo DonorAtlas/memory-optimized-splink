@@ -32,6 +32,7 @@ def predict_from_comparison_vectors_sqls_using_settings(
         needs_matchkey_column=settings_obj._needs_matchkey_column,
         include_clerical_match_score=include_clerical_match_score,
         sql_infinity_expression=sql_infinity_expression,
+        tf_cols=list(settings_obj._tf_array_columns.keys()),
     )
 
 
@@ -49,6 +50,7 @@ def predict_from_comparison_vectors_sqls(
     include_clerical_match_score: bool = False,
     sql_infinity_expression: str = "'infinity'",
     comparison_vectors_table_name: str = "__splink__df_comparison_vectors",
+    tf_cols: list[str] = [],
 ) -> list[dict[str, str]]:
     sqls = []
 
@@ -67,9 +69,20 @@ def predict_from_comparison_vectors_sqls(
     else:
         clerical_match_score = ""
 
+    # TODO: @aberdeenmorrow standardize these terms. see inference.py and comparison_level.py
+    tf_joins = ""
+    for col in tf_cols:
+        blocked_with_tf_table_name = f"__splink__blocked_ids_pairs_{col}_with_tf"
+        tf_joins += f"""
+        LEFT JOIN {blocked_with_tf_table_name} AS {col}_tf
+            ON {col}_tf.unique_id_l = cv.unique_id_l
+            AND {col}_tf.unique_id_r = cv.unique_id_r
+        """
+
     sql = f"""
     select {select_cols_expr} {clerical_match_score}
-    from {comparison_vectors_table_name}
+    from {comparison_vectors_table_name} AS cv
+        {tf_joins}
     """
     sql_info = {
         "sql": sql,

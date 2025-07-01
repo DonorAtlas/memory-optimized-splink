@@ -28,7 +28,9 @@ class LinkerTableManagement:
     def __init__(self, linker: Linker):
         self._linker = linker
 
-    def compute_tf_table(self, column_name: str, is_array_column: bool = False) -> SplinkDataFrame:
+    def compute_tf_table(
+        self, column_name: str, is_array_column: bool = False, ordered: bool = False, tokenize: bool = False
+    ) -> SplinkDataFrame:
         """Compute a term frequency table for a given column and persist to the database
 
         This method is useful if you want to pre-compute term frequency tables e.g.
@@ -60,6 +62,9 @@ class LinkerTableManagement:
 
         Args:
             column_name (str): The column name in the input table
+            is_array_column (bool): Whether the column is an array column
+            ordered (bool): Whether to order the term frequency table by frequency
+            tokenize (bool): Whether to tokenize the column
 
         Returns:
             SplinkDataFrame: The resultant table as a splink data frame
@@ -79,7 +84,11 @@ class LinkerTableManagement:
             pipeline = CTEPipeline()
             pipeline = enqueue_df_concat(self._linker, pipeline)
             sqls = term_frequencies_for_single_column_sqls(
-                input_col, is_array_column=is_array_column, tf_table_name=tf_tablename
+                input_col,
+                is_array_column=is_array_column,
+                tf_table_name=tf_tablename,
+                ordered=ordered,
+                tokenize=tokenize,
             )
             pipeline.enqueue_list_of_sqls(sqls)
             tf_df = self._linker._db_api.sql_pipeline_to_splink_dataframe(pipeline)

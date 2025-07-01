@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from typing import TYPE_CHECKING, List
 
 import sqlglot
@@ -62,8 +63,10 @@ class EMTrainingSession:
         fix_m_probabilities: bool = False,
         fix_probability_two_random_records_match: bool = False,
         estimate_without_term_frequencies: bool = False,
+        logger: logging.Logger | None = None,
     ):
-        logger.info("\n----- Starting EM training session -----\n")
+        if logger:
+            logger.info("\n----- Starting EM training session -----\n")
 
         self._original_linker = linker
         self.db_api = db_api
@@ -209,6 +212,10 @@ class EMTrainingSession:
 
         try:
             # Generate blocked candidates
+            logger.info(
+                f"TIER 3 status update: (1/3) Generating blocked candidates for blocking rule {self._blocking_rule_for_training.blocking_rule_sql}"
+            )
+            s1 = time.monotonic()
             blocked_candidates_sql = compute_blocked_candidates_from_id_pairs_sql(
                 orig_settings._columns_to_select_for_blocking,
                 blocked_pairs_table_name=blocked_pairs.physical_name,
@@ -223,6 +230,9 @@ class EMTrainingSession:
             blocked_candidates = self.db_api.sql_to_splink_dataframe_checking_cache(
                 blocked_candidates_sql, "__splink__df_blocked_candidates"
             )
+            logger.info(
+                f"TIER 3 status update: (1/3) Blocked candidates in {time.monotonic() - s1:.2f} seconds"
+            )
         except Exception as e:
             logger.error(f"Error generating blocked candidates: {e}")
             logger.error(f"Blocked candidates sql: {blocked_candidates_sql}")
@@ -232,7 +242,10 @@ class EMTrainingSession:
         try:
             # Generate comparison metrics (with all columns)
             pipeline = CTEPipeline()
-            logger.info("Generating comparison metrics")
+            logger.info(
+                f"TIER 3 status update: (2/3) Generating comparison metrics for blocking rule {self._blocking_rule_for_training.blocking_rule_sql}"
+            )
+            s2 = time.monotonic()
             comparison_metrics_sql = compute_comparison_metrics_from_blocked_candidates_sql(
                 unique_id_input_columns=self.unique_id_input_columns,
                 comparisons=self.core_model_settings.comparisons,
@@ -244,6 +257,9 @@ class EMTrainingSession:
             pipeline.enqueue_sql(comparison_metrics_sql, "__splink__df_comparison_metrics")
             logger.info(f"Computing comparison metrics")
             comparison_metrics = self.db_api.sql_pipeline_to_splink_dataframe(pipeline)
+            logger.info(
+                f"TIER 3 status update: (2/3) Generated comparison metrics in {time.monotonic() - s2:.2f} seconds"
+            )
         except Exception as e:
             logger.error(f"Error generating comparison metrics: {e}")
             logger.error(f"Comparison metrics sql: {comparison_metrics_sql}")
@@ -253,7 +269,10 @@ class EMTrainingSession:
         # Generate comparison vectors
         try:
             pipeline = CTEPipeline()
-            logger.info("Generating comparison vectors")
+            logger.info(
+                f"TIER 3 status update: (3/3) Generating comparison vectors for blocking rule {self._blocking_rule_for_training.blocking_rule_sql}"
+            )
+            s3 = time.monotonic()
             comparison_vectors_sql = compute_comparison_vectors_from_comparison_metrics_sql(
                 comparison_metrics_table_name=comparison_metrics.physical_name,
                 unique_id_input_columns=self.unique_id_input_columns,
@@ -270,6 +289,9 @@ class EMTrainingSession:
             logger.error(f"Error generating comparison vectors: {e}")
             logger.error(f"Comparison vectors sql: {comparison_vectors_sql}")
             raise e
+        logger.info(
+            f"TIER 3 status update: (3/3) Generated comparison vectors in {time.monotonic() - s3:.2f} seconds"
+        )
         return comparison_vectors
 
     def _train(self, cvv: SplinkDataFrame = None) -> CoreModelSettings:
@@ -305,6 +327,7 @@ class EMTrainingSession:
             unique_id_input_columns=self.unique_id_input_columns,
             training_fixed_probabilities=self.training_fixed_probabilities,
             df_comparison_vector_values=cvv,
+            logger=self.logger,
         )
         self.core_model_settings = core_model_settings_history[-1]
         self._core_model_settings_history = core_model_settings_history

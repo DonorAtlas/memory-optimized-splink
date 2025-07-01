@@ -442,7 +442,7 @@ class Settings:
         cols = []
 
         for uid_col in unique_id_input_columns:
-            cols.extend(uid_col.names_l_r)
+            cols.extend(f"cv.{col}" for col in uid_col.names_l_r)
 
         for cc in comparisons:
             cols.extend(
@@ -453,10 +453,10 @@ class Settings:
             )
 
         for add_col in additional_columns_to_retain:
-            cols.extend(add_col.names_l_r)
+            cols.extend(f"cv.{col}" for col in add_col.names_l_r)
 
         if needs_matchkey_column:
-            cols.append("match_key")
+            cols.append("cv.match_key")
 
         cols = dedupe_preserving_order(cols)
         return cols

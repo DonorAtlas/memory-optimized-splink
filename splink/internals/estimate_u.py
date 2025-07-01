@@ -168,7 +168,7 @@ def estimate_u_values(linker: Linker, max_pairs: float, seed: int = None) -> Non
         br = blocking_rule_to_obj(
             {
                 "blocking_rule": "1=1",
-                "salting_partitions": min(multiprocessing.cpu_count(), 40),
+                "salting_partitions": multiprocessing.cpu_count(),
             }
         )
         settings_obj._blocking_rules_to_generate_predictions = [br]

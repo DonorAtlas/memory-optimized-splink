@@ -666,25 +666,6 @@ def materialise_exploded_id_tables(
         pipeline.enqueue_sql(sql, table_name)
 
         marginal_ids_table = db_api.sql_pipeline_to_splink_dataframe(pipeline)
-
-        # Preview 5 rows of the marginal_ids_table
-        logger.info(f"Preview of {table_name} (first 5 rows):")
-        # Get schema information
-        schema_sql = f"SELECT * FROM {marginal_ids_table.physical_name} LIMIT 0"
-        schema_results = db_api._execute_sql_against_backend(schema_sql)
-        column_names = (
-            [col[0] for col in schema_results.description] if hasattr(schema_results, "description") else []
-        )
-        logger.info(f"Schema: {column_names}")
-
-        # Get data preview
-        preview_sql = f"SELECT * FROM {marginal_ids_table.physical_name} LIMIT 5"
-        preview_results = db_api._execute_sql_against_backend(preview_sql)
-        # Convert to fetchall() to get a list of rows we can iterate over
-        rows = preview_results.fetchall() if hasattr(preview_results, "fetchall") else list(preview_results)
-        for row in rows:
-            logger.info(f"--{row}")
-
         br.exploded_id_pair_table = marginal_ids_table
         exploded_tables.append(marginal_ids_table)
 
@@ -718,16 +699,20 @@ def _sql_gen_where_condition(
         if join_key_col_name
         else _composite_unique_id_from_nodes_sql(unique_id_cols, "r")
     )
-    id_expr_ex = _composite_unique_id_from_edges_sql(unique_id_cols, "l", "ex")
+
+    logger.info(f"gen where cond link_type = {link_type}")
 
     if link_type in ("two_dataset_link_only", "self_link"):
+        logger.info("if two_dataset_link_only or self_link")
         where_condition = " where 1=1 "
     elif link_type in ["link_and_dedupe", "dedupe_only"]:
+        logger.info("elif link_and_dedupe or dedupe_only")
         where_condition = f"where {id_expr_l} < {id_expr_r}"
         if exclude_sql:
             # TODO: @aberdeenmorrow check this
             where_condition += f' AND ex."unique_id_l" IS NULL'
     elif link_type == "link_only":
+        logger.info("elif link_only")
         source_dataset_col = unique_id_cols[0]
         where_condition = (
             f"where {id_expr_l} < {id_expr_r} "
@@ -764,6 +749,7 @@ def block_using_rules_sqls(
     where_condition = _sql_gen_where_condition(
         link_type, unique_id_input_columns, join_key_col_name=join_key_col_name
     )
+
     # Cover the case where there are no blocking rules
     # This is a bit of a hack where if you do a self-join on 'true'
     # you create a cartesian product, rather than having separate code

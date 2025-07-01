@@ -240,6 +240,7 @@ def expectation_maximisation(
     unique_id_input_columns: List[InputColumn],
     training_fixed_probabilities: set[str],
     df_comparison_vector_values: SplinkDataFrame,
+    logger: logging.Logger = None,
 ) -> List[CoreModelSettings]:
     """In the expectation step, we use the current model parameters to estimate
     the probability of match for each pairwise record comparison
@@ -263,6 +264,7 @@ def expectation_maximisation(
         agreement_pattern_counts = db_api.sql_pipeline_to_splink_dataframe(pipeline)
 
     for i in range(1, max_iterations + 1):
+        logger.info(f"TIER 5 status update: Running expectation step for iteration {i} of {max_iterations}")
         pipeline = CTEPipeline()
         probability_two_random_records_match = core_model_settings.probability_two_random_records_match
         start_time = time.time()

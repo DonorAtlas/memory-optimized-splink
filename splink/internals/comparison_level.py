@@ -589,13 +589,13 @@ class ComparisonLevel:
 
         # A tf adjustment of 1D is a multiplier of 1.0, i.e. no adjustment
         if self.comparison_vector_value == -1:
-            sql = f"WHEN  {gamma_colname_value_is_this_level} then cast(1 as float8)"
+            sql = f"WHEN  cv.{gamma_colname_value_is_this_level} then cast(1 as float8)"
         elif not self._has_tf_adjustments:
-            sql = f"WHEN  {gamma_colname_value_is_this_level} then cast(1 as float8)"
+            sql = f"WHEN  cv.{gamma_colname_value_is_this_level} then cast(1 as float8)"
         elif self._tf_adjustment_weight == 0:
-            sql = f"WHEN  {gamma_colname_value_is_this_level} then cast(1 as float8)"
+            sql = f"WHEN  cv.{gamma_colname_value_is_this_level} then cast(1 as float8)"
         elif self._is_else_level:
-            sql = f"WHEN  {gamma_colname_value_is_this_level} then cast(1 as float8)"
+            sql = f"WHEN  cv.{gamma_colname_value_is_this_level} then cast(1 as float8)"
         else:
             tf_adj_col = self._tf_adjustment_input_column
             tf_col_is_array = self._tf_col_is_array
@@ -603,21 +603,19 @@ class ComparisonLevel:
                 sql = ""
 
             elif tf_col_is_array:
-                array_l = f"{tf_adj_col.name_l}"
-                array_r = f"{tf_adj_col.name_r}"
+                array_l = f"cv.{tf_adj_col.name_l}"
+                array_r = f"cv.{tf_adj_col.name_r}"
 
                 # 1) existence = non-empty intersection of base arrays
                 # TODO: @aberdeenmorrow make this work with any array selection based on the cl
                 tf_adjustment_exists = f"ARRAY_LENGTH(ARRAY_INTERSECT({array_l}, {array_r})) > 0"
                 # TODO: this requires tf tables to be registered without hashes or some lookup with the db to get physical names. Perhaps pass a param through the Comparison?
-                tf_table_name = f"__splink__df_tf_{tf_adj_col.unquote().name.replace(' ', '_')}"
+                # tf_table_name = f"__splink__df_tf_{tf_adj_col.unquote().name.replace(' ', '_')}"
 
                 # 2) for each side, pull max(tf) over just the intersected terms
+                col_name = tf_adj_col.unquote().name.replace(" ", "_")
                 min_tf_of_intersection_sql = f"""(
-                    SELECT MIN(tf.tf_value)
-                    FROM UNNEST(array_intersect({array_l}, {array_r})) AS t(term)
-                    JOIN {tf_table_name} AS tf
-                    ON tf.term = t.term
+                    {col_name}_tf.min_tf_{col_name}
                 )"""
 
                 # 3) coalesce-compare logic, just like your scalar branch
@@ -638,8 +636,8 @@ class ComparisonLevel:
                 END)"""
 
             else:
-                coalesce_l_r = f"coalesce({tf_adj_col.tf_name_l}, {tf_adj_col.tf_name_r})"
-                coalesce_r_l = f"coalesce({tf_adj_col.tf_name_r}, {tf_adj_col.tf_name_l})"
+                coalesce_l_r = f"coalesce(cv.{tf_adj_col.tf_name_l}, cv.{tf_adj_col.tf_name_r})"
+                coalesce_r_l = f"coalesce(cv.{tf_adj_col.tf_name_r}, cv.{tf_adj_col.tf_name_l})"
 
                 tf_adjustment_exists = f"{coalesce_l_r} is not null"
                 u_prob_exact_match = self._u_probability_corresponding_to_exact_match(comparison_levels)

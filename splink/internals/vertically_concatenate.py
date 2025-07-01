@@ -7,7 +7,7 @@ from splink.internals.input_column import InputColumn
 from splink.internals.pipeline import CTEPipeline
 from splink.internals.splink_dataframe import SplinkDataFrame
 
-from .term_frequencies import compute_all_term_frequencies_sqls
+from .term_frequencies import colname_to_tf_tablename, compute_all_term_frequencies_sqls
 
 logger = logging.getLogger(__name__)
 
@@ -48,10 +48,9 @@ def vertically_concatenate_sql(
 
     source_dataset_column_already_exists = False
     if source_dataset_input_column:
-        source_dataset_column_already_exists = (
-            source_dataset_input_column.unquote().name
-            in [c.unquote().name for c in df_obj.columns]
-        )
+        source_dataset_column_already_exists = source_dataset_input_column.unquote().name in [
+            c.unquote().name for c in df_obj.columns
+        ]
 
     select_columns_sql = ", ".join(columns)
     if len(input_tables) > 1:
@@ -186,9 +185,7 @@ def concat_table_column_names(linker: Linker) -> list[str]:
     Returns list of column names of the table __splink__df_concat,
     without needing to instantiate the table.
     """
-    source_dataset_input_column = (
-        linker._settings_obj.column_info_settings.source_dataset_input_column
-    )
+    source_dataset_input_column = linker._settings_obj.column_info_settings.source_dataset_input_column
 
     input_tables = linker._input_tables_dict
     salting_required = linker._settings_obj.salting_required
@@ -201,10 +198,9 @@ def concat_table_column_names(linker: Linker) -> list[str]:
     if len(input_tables) > 1:
         source_dataset_column_already_exists = False
         if source_dataset_input_column:
-            source_dataset_column_already_exists = (
-                source_dataset_input_column.unquote().name
-                in [c.unquote().name for c in df_obj.columns]
-            )
+            source_dataset_column_already_exists = source_dataset_input_column.unquote().name in [
+                c.unquote().name for c in df_obj.columns
+            ]
         if not source_dataset_column_already_exists:
             columns.append("source_dataset")
     return columns

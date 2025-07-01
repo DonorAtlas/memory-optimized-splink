@@ -35,24 +35,40 @@ def term_frequencies_for_single_column_sqls(
     tf_table_name: str,
     table_name: str = "__splink__df_concat",
     is_array_column: bool = False,
+    ordered: bool = False,
+    tokenize: bool = False,
 ) -> list[dict[str, str]]:
     col_name_unquoted = input_column.unquote().name
     col_name = input_column.name
-    logger.info(f"Computing tf for {col_name} with is_array_column: {is_array_column}")
+    logger.info(
+        f"Computing tf for {col_name} with is_array_column: {is_array_column} with tokenize: {tokenize}"
+    )
     sqls = []
 
     if is_array_column:
         exploded_table_name = f"__splink_tf_df_{col_name_unquoted}_exploded"
-        explode_sql = f"""
-            SELECT
-                val     AS term
-            FROM {table_name} AS c
-            CROSS JOIN UNNEST(c.{col_name}) AS val
-            WHERE c.{col_name} IS NOT NULL
-        """
+
+        if tokenize:
+            explode_sql = f"""
+                SELECT
+                    token.unnest as term
+                FROM {table_name} AS c
+                CROSS JOIN UNNEST(c.{col_name}) AS val
+                CROSS JOIN UNNEST(string_split(CAST(val.unnest AS VARCHAR), ' ')) AS token
+                WHERE c.{col_name} IS NOT NULL AND token IS NOT NULL
+            """
+        else:
+            explode_sql = f"""
+                SELECT
+                    LOWER(CAST(val AS VARCHAR)) AS term
+                FROM {table_name} AS c
+                CROSS JOIN UNNEST(c.{col_name}) AS val
+                WHERE c.{col_name} IS NOT NULL AND val IS NOT NULL
+            """
+
         sqls.append({"sql": explode_sql, "output_table_name": exploded_table_name})
 
-        total_terms_table_name = f"__splink_tf_df_{col_name}_total_terms"
+        total_terms_table_name = f"__splink_tf_df_{col_name_unquoted}_total_terms"
         total_terms_sql = f"""
             SELECT 
                 COUNT(*) AS total_unnested
@@ -62,12 +78,13 @@ def term_frequencies_for_single_column_sqls(
 
         freqs_sql = f"""
             SELECT
-                e.term.unnest as term,
+                e.term AS term,
                 COUNT(*)::FLOAT8
                 / ANY_VALUE(t.total_unnested) AS tf_value
             FROM {exploded_table_name} AS e
             CROSS JOIN {total_terms_table_name} AS t
             GROUP BY e.term
+            {f"ORDER BY tf_value DESC" if ordered else ""}
         """
         sqls.append({"sql": freqs_sql, "output_table_name": tf_table_name})
 
@@ -80,6 +97,7 @@ def term_frequencies_for_single_column_sqls(
         from {table_name}
         where {col_name} is not null
         group by {col_name}
+        {f"order by {input_column.tf_name} desc" if ordered else ""}
         """
         sqls.append({"sql": sql, "output_table_name": tf_table_name})
 
@@ -96,7 +114,10 @@ def _join_tf_to_df_concat_sql(linker: Linker) -> str:
         if col.is_array_column:
             continue
         tbl = colname_to_tf_tablename(col)
-        select_cols.append(f"{tbl}.{col.tf_name}")
+        min_tf_value = linker._db_api._execute_sql_against_backend(
+            f"select min({col.tf_name}) from {tbl}"
+        ).fetchone()[0]
+        select_cols.append(f"COALESCE({tbl}.{col.tf_name}, {min_tf_value}) as {col.tf_name}")
 
     column_names_in_df_concat = linker._concat_table_column_names
 

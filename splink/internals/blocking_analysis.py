@@ -207,6 +207,7 @@ def _row_counts_per_input_table(
         from __splink__df_concat
         """
     elif source_dataset_input_column is not None:
+        logger.info(f"source_dataset_input_column: {source_dataset_input_column.name}")
         sql = f"""
         select count(*) as count
         from __splink__df_concat
