@@ -27,6 +27,30 @@ from splink.internals.sql_transform import sqlglot_tree_signature
 
 logger = logging.getLogger(__name__)
 
+total_records_in_field = col_fill_rate_map = {
+    "middle_name": 226_657_846,
+    "middle_initial": 226_657_846,
+    "first_last": 226_657_846,
+    "employers": 226_657_846,
+    "occupations": 129_433_261,
+    "zip_5s": 226_657_846,
+    "city_state_pairs": 226_657_846,
+    "addr_digits": 226_657_846,  # false
+    "street_addresses": 226_657_846,  # false
+}
+
+distinct_records_in_field = {
+    "middle_name": 1_590_000,
+    "middle_initial": 149,
+    "first_last": 69_599_908,
+    "employers": 19_910_270,  # false
+    "occupations": 129_388_080,  # false
+    "zip_5s": 50_395,
+    "city_state_pairs": 52_980,
+    "addr_digits": 28_433_651,
+    "street_addresses": 33_288_425,
+}
+
 
 def _is_exact_match(sql_syntax_tree):
     signature = sqlglot_tree_signature(sql_syntax_tree)
@@ -599,6 +623,7 @@ class ComparisonLevel:
         else:
             tf_adj_col = self._tf_adjustment_input_column
             tf_col_is_array = self._tf_col_is_array
+            col_name = tf_adj_col.unquote().name.replace(" ", "_")
             if not tf_adj_col:
                 sql = ""
 
@@ -613,7 +638,6 @@ class ComparisonLevel:
                 # tf_table_name = f"__splink__df_tf_{tf_adj_col.unquote().name.replace(' ', '_')}"
 
                 # 2) for each side, pull max(tf) over just the intersected terms
-                col_name = tf_adj_col.unquote().name.replace(" ", "_")
                 min_tf_of_intersection_sql = f"""(
                     {col_name}_tf.min_tf_{col_name}
                 )"""
@@ -640,7 +664,6 @@ class ComparisonLevel:
                 coalesce_r_l = f"coalesce(cv.{tf_adj_col.tf_name_r}, cv.{tf_adj_col.tf_name_l})"
 
                 tf_adjustment_exists = f"{coalesce_l_r} is not null"
-                u_prob_exact_match = self._u_probability_corresponding_to_exact_match(comparison_levels)
 
                 # Using coalesce protects against one of the tf adjustments being null
                 # Which would happen if the user provided their own tf adjustment table
@@ -648,6 +671,15 @@ class ComparisonLevel:
 
                 # In this case rather than taking the greater of the two, we take
                 # whichever value exists
+
+                sql = f"""
+                WHEN {gamma_colname_value_is_this_level} THEN
+                (CASE
+                    WHEN {tf_adjustment_exists}
+                    THEN 
+                    ELSE cast(1 as float8)
+                END)
+                """
 
                 if self._tf_minimum_u_value == 0.0:
                     divisor_sql = f"""
@@ -671,14 +703,13 @@ class ComparisonLevel:
                     END)
                     """
 
+                N = total_records_in_field[col_name]
+                C = distinct_records_in_field[col_name]
+
                 sql = f"""
                 WHEN  {gamma_colname_value_is_this_level} then
                     (CASE WHEN {tf_adjustment_exists}
-                    THEN
-                    POW(
-                        cast({u_prob_exact_match} as float8) /{divisor_sql},
-                        cast({self._tf_adjustment_weight} as float8)
-                    )
+                    THEN ({N} / ({C} * {divisor_sql}))
                     ELSE cast(1 as float8)
                     END)
                 """

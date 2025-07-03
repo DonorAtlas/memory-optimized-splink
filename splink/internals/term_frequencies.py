@@ -60,7 +60,7 @@ def term_frequencies_for_single_column_sqls(
         else:
             explode_sql = f"""
                 SELECT
-                    LOWER(CAST(val AS VARCHAR)) AS term
+                    LOWER(CAST(val.unnest AS VARCHAR)) AS term
                 FROM {table_name} AS c
                 CROSS JOIN UNNEST(c.{col_name}) AS val
                 WHERE c.{col_name} IS NOT NULL AND val IS NOT NULL
@@ -68,22 +68,11 @@ def term_frequencies_for_single_column_sqls(
 
         sqls.append({"sql": explode_sql, "output_table_name": exploded_table_name})
 
-        total_terms_table_name = f"__splink_tf_df_{col_name_unquoted}_total_terms"
-        total_terms_sql = f"""
-            SELECT 
-                COUNT(*) AS total_unnested
-            FROM {exploded_table_name}
-        """
-        sqls.append({"sql": total_terms_sql, "output_table_name": total_terms_table_name})
-
         freqs_sql = f"""
             SELECT
-                e.term AS term,
-                COUNT(*)::FLOAT8
-                / ANY_VALUE(t.total_unnested) AS tf_value
-            FROM {exploded_table_name} AS e
-            CROSS JOIN {total_terms_table_name} AS t
-            GROUP BY e.term
+                term, COUNT(*)::FLOAT8 AS tf_value
+            FROM {exploded_table_name}
+            GROUP BY term
             {f"ORDER BY tf_value DESC" if ordered else ""}
         """
         sqls.append({"sql": freqs_sql, "output_table_name": tf_table_name})
@@ -91,9 +80,7 @@ def term_frequencies_for_single_column_sqls(
     else:
         sql = f"""
         select
-        {col_name}, cast(count(*) as float8) / (select
-            count({col_name}) as total from {table_name})
-                as {input_column.tf_name}
+        {col_name}, cast(count(*) as float8) as {input_column.tf_name}
         from {table_name}
         where {col_name} is not null
         group by {col_name}
@@ -143,6 +130,8 @@ def _join_tf_to_df_concat_sql(linker: Linker) -> str:
     from __splink__df_concat
     {left_joins_str}
     """
+
+    logger.info(f"SQL: {sql}")
 
     return sql
 

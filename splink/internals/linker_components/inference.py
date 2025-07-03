@@ -351,9 +351,14 @@ class LinkerInference:
         )
         logger.info(f"Predict SQL: {sqls[0]['sql']}")
         # __splink__df_match_weight_parts
-        self._linker._db_api._execute_sql_against_backend(
-            f"CREATE TABLE {sqls[0]['output_table_name']} AS {sqls[0]['sql']}"
-        )
+        try:
+            sql = f"CREATE TABLE {sqls[0]['output_table_name']} AS {sqls[0]['sql']}"
+            self._linker._db_api._execute_sql_against_backend(sql)
+        except Exception as e:
+            logger.error(f"Error creating table {sqls[0]['output_table_name']}: {e}")
+            logger.error(f"SQL: {sql}")
+            raise e
+
         table_size = self._linker._db_api._execute_sql_against_backend(
             f"SELECT COUNT(*) FROM {sqls[0]['output_table_name']}"
         )
