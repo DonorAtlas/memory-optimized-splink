@@ -770,9 +770,7 @@ class ComparisonLevel:
 
                 second_term = (1 - similarity_value) * max_epsilon_value * N**2
                 if second_term != 0:
-                    logger.info(f"adding second term to {self.label_for_charts}: {second_term}")
                     tf_score_sql += f"+ ({second_term}/{product_l_r})"
-                # (({similarity_value} / POW({product_l_r}, 0.5)) + (( (1-{similarity_value}) * {max_epsilon_value} )/{product_l_r}))
 
                 if self.tf_modifier_custom_sql:
                     multiplier_sql = f"(1/{self.tf_modifier_custom_sql}) * {tf_score_sql}"

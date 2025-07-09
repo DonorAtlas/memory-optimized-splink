@@ -29,6 +29,7 @@ from splink.internals.misc import ascii_uid, ensure_is_list
 from splink.internals.parse_sql import get_columns_used_from_sql
 from splink.internals.pipeline import CTEPipeline
 from splink.internals.predict import predict_from_comparison_vectors_sqls_using_settings
+from splink.internals.shard_sql import shard_comparison_vectors_sql
 from splink.internals.splink_dataframe import SplinkDataFrame
 from splink.internals.term_frequencies import (
     _join_new_table_to_df_concat_with_tf_sql,
@@ -438,10 +439,7 @@ class LinkerInference:
 
             if tf_array_on_any_fuzzy_comparison:
                 sql = f"""CREATE TABLE {blocked_with_tf_table_name} AS
-                WITH
-                {filtered_cte}
-                {exact_cte}
-                {fuzzy_ctes}
+                WITH {filtered_cte} {exact_cte} {fuzzy_ctes}
             , exact_matches AS ({exact_table_construction_sql})
                 SELECT * FROM exact_matches
                 UNION ALL
@@ -449,10 +447,7 @@ class LinkerInference:
                 """
             else:
                 sql = f"""CREATE TABLE {blocked_with_tf_table_name} AS
-                WITH
-                {filtered_cte}
-                {exact_cte}
-                {exact_table_construction_sql}
+                WITH {filtered_cte} {exact_cte} {exact_table_construction_sql}
                 """
 
             logger.info(f"Optimized SQL:\n{sql}")
@@ -470,10 +465,11 @@ class LinkerInference:
             threshold_match_weight,
             sql_infinity_expression=self._linker._infinity_expression,
         )
-        logger.info(f"Predict SQL: {sqls[0]['sql']}")
         # __splink__df_match_weight_parts
         try:
-            sql = f"CREATE TABLE {sqls[0]['output_table_name']} AS {sqls[0]['sql']}"
+            # sql = f"CREATE TABLE {sqls[0]['output_table_name']} AS {sqls[0]['sql']}"
+            sql = f"""CREATE TABLE {sqls[0]['output_table_name']} AS {sqls[0]['sql']}"""
+            logger.info(f"Predict SQL: {sql}")
             self._linker._db_api._execute_sql_against_backend(sql)
         except Exception as e:
             logger.error(f"Error creating table {sqls[0]['output_table_name']}: {e}")
