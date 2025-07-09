@@ -704,16 +704,13 @@ def _sql_gen_where_condition(
     logger.info(f"gen where cond link_type = {link_type}")
 
     if link_type in ("two_dataset_link_only", "self_link"):
-        logger.info("if two_dataset_link_only or self_link")
         where_condition = " where 1=1 "
     elif link_type in ["link_and_dedupe", "dedupe_only"]:
-        logger.info("elif link_and_dedupe or dedupe_only")
         where_condition = f"where {id_expr_l} < {id_expr_r}"
         if exclude_sql:
             # TODO: @aberdeenmorrow check this
             where_condition += f' AND ex."unique_id_l" IS NULL'
     elif link_type == "link_only":
-        logger.info("elif link_only")
         source_dataset_col = unique_id_cols[0]
         where_condition = (
             f"where {id_expr_l} < {id_expr_r} "
