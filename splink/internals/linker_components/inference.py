@@ -454,32 +454,30 @@ class LinkerInference:
             )
             """
 
-            exact_cte = f"""
+            exact_cte = f""", exact_intersections AS (
+                SELECT
+                    unique_id_l,
+                    unique_id_r,
+                    array_intersect({col.name_l}, {col.name_r}) AS intersection_terms
+                FROM filtered_cv
+                WHERE list_has_any({col.name_l}, {col.name_r})
+            )
             , exact_matches AS (
                 SELECT
-                    cv.unique_id_l,
-                    cv.unique_id_r,
+                    ei.unique_id_l,
+                    ei.unique_id_r,
                     COUNT(*) AS size_of_intersection_{col_name},
                     ARRAY_AGG(tf.{tf_column_name} ORDER BY tf.{tf_column_name})
                         AS sorted_tfs_of_intersection_{col_name},
                     FALSE AS is_fuzzy_comparison
-                FROM filtered_cv AS cv
-                CROSS JOIN UNNEST(
-                    array_intersect(
-                        cv.{col.name_l},
-                        cv.{col.name_r}
-                    )
-                ) AS t(term)
-                JOIN {tf_table_name} AS tf
-                ON tf.{term_column_name} = t.term
-                GROUP BY
-                cv.unique_id_l,
-                cv.unique_id_r
+                FROM exact_intersections ei
+                CROSS JOIN UNNEST(ei.intersection_terms) AS t(term)  -- Uses pre-computed intersection
+                JOIN __splink__df_tf_zip_5s tf ON tf.term = t.term
+                GROUP BY ei.unique_id_l, ei.unique_id_r
             )
             """
 
-            fuzzy_ctes = f"""
-            , exploded_l AS (
+            fuzzy_ctes = f""", exploded_l AS (
                 SELECT unique_id_l, unique_id_r, term1
                 FROM filtered_cv
                 CROSS JOIN UNNEST(filtered_cv.{col.name_l}) AS t1(term1)
@@ -521,8 +519,7 @@ class LinkerInference:
             """
 
             if tf_array_on_any_fuzzy_comparison:
-                sql = f"""
-                CREATE TABLE {blocked_with_tf_table_name} AS
+                sql = f"""CREATE TABLE {blocked_with_tf_table_name} AS
                 WITH
                 {filtered_cte}
                 {exact_cte}
@@ -532,8 +529,7 @@ class LinkerInference:
                 SELECT * FROM fuzzy_matches;
                 """
             else:
-                sql = f"""
-                CREATE TABLE {blocked_with_tf_table_name} AS
+                sql = f"""CREATE TABLE {blocked_with_tf_table_name} AS
                 WITH
                 {filtered_cte}
                 {exact_cte}
