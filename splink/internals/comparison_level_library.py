@@ -136,6 +136,8 @@ class CustomLevel(ComparisonLevelCreator):
         label_for_charts: str = None,
         base_dialect_str: str = None,
         only_help: bool = False,
+        tf_modifier_custom_sql: str = None,
+        log_base: float = 2.0,
     ):
         """Represents a comparison level with a custom sql expression
 
@@ -155,6 +157,7 @@ class CustomLevel(ComparisonLevelCreator):
         self.label_for_charts = label_for_charts
         self.base_dialect_str = base_dialect_str
         self.only_help = only_help
+        self.tf_modifier_custom_sql = tf_modifier_custom_sql
 
     def create_sql(self, sql_dialect: SplinkDialect) -> str:
         sql_condition = self.sql_condition
@@ -195,14 +198,19 @@ class CustomLevel(ComparisonLevelCreator):
                 "is_null_level",
                 "m_probability",
                 "u_probability",
+                "similarity_value",
+                "max_epsilon_value",
+                "log_base",
                 "tf_adjustment_column",
                 "tf_adjustment_weight",
                 "tf_minimum_u_value",
                 "tf_col_is_array",
+                "tf_modifier_custom_sql",
                 "label_for_charts",
                 "disable_tf_exact_match_detection",
                 "fix_m_probability",
                 "fix_u_probability",
+                "tf_modifier_custom_sql",
                 "only_help",
             )
             # split dict in two depending whether or not entries are 'configurables'

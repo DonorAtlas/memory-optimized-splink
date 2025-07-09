@@ -19,6 +19,7 @@ from splink.internals.comparison_vector_values import (
     compute_comparison_vectors_from_comparison_metrics_sql,
 )
 from splink.internals.database_api import AcceptableInputTableType
+from splink.internals.exceptions import SplinkException
 from splink.internals.find_matches_to_new_records import (
     add_unique_id_and_source_dataset_cols_if_needed,
 )
@@ -258,6 +259,7 @@ class LinkerInference:
         # ------------------------------
         # Blocking
         # ------------------------------
+        # blocked id pairs
         sqls = block_using_rules_sqls(
             input_tablename_l=blocking_input_tablename_l,
             input_tablename_r=blocking_input_tablename_r,
@@ -276,6 +278,11 @@ class LinkerInference:
             f"SELECT COUNT(*) FROM {sqls[0]['output_table_name']}"
         )
         logger.info(f"{sqls[0]['output_table_name']} size: {table_size}")
+
+        if table_size.fetchone()[0] == 0:
+            raise SplinkException(
+                "Blocking rules resulted in no blocked id pairs. Exiting early. Please loosen blocking rules or input more data."
+            )
 
         # pipeline.enqueue_list_of_sqls(sqls)
 
@@ -306,31 +313,8 @@ class LinkerInference:
         )
         logger.info(f"{sqls[0]['output_table_name']} size: {table_size}")
 
-        for col_name in self._linker._settings_obj._tf_array_columns:
-            col = next(
-                (col for col in self._linker._input_columns() if col.input_name == col_name),
-                None,
-            )
-            if not col:
-                continue
-            blocked_with_tf_table_name = f"__splink__blocked_ids_pairs_{col_name}_with_tf"
-            tf_table_name = f"__splink__df_tf_{col_name}"
-
-            sql = f"""WITH {col_name}_tf AS (
-            SELECT
-                unique_id_l,
-                unique_id_r,
-                MIN(tf.tf_value) AS min_tf_{col_name}
-            FROM {sqls[0]['output_table_name']}
-            CROSS JOIN UNNEST(array_intersect({col.name_l}, {col.name_r})) AS t(term)
-            JOIN {tf_table_name} AS tf
-                ON tf.term = t.term
-            GROUP BY unique_id_l, unique_id_r
-            )
-            SELECT * FROM {col_name}_tf"""
-            self._linker._db_api._execute_sql_against_backend(
-                f"CREATE TABLE {blocked_with_tf_table_name} AS {sql}"
-            )
+        tables_result = self._linker._db_api._execute_sql_against_backend("SHOW TABLES")
+        logger.info(f"Tables in db: {tables_result.fetchall()}")
 
         logger.info(f"Comparison vector SQL: {sqls[1]['sql']}")
         # comparison_vectors_df
@@ -341,6 +325,228 @@ class LinkerInference:
             f"SELECT COUNT(*) FROM {sqls[1]['output_table_name']}"
         )
         logger.info(f"{sqls[1]['output_table_name']} size: {table_size}")
+
+        for col_name, (
+            _,
+            gamma_column_name,
+            gamma_levels,
+        ) in self._linker._settings_obj._tf_array_columns.items():
+            col = next(
+                (col for col in self._linker._input_columns() if col.input_name == col_name),
+                None,
+            )
+            if not col:
+                continue
+            blocked_with_tf_table_name = f"__splink__blocked_ids_pairs_{col_name}_with_tf"
+            tf_table_name = f"__splink__df_tf_{col_name}"
+
+            # TODO: @aberdeenmorrow Fix this in the underlying tf array tables for everything except employers
+            term_column_name = "term" if not col_name == "tokenized_employers" else "employers"
+            tf_column_name = "tf_value" if not col_name == "tokenized_employers" else f"tf_employers"
+            logger.info(f"tf_table_name: {tf_table_name}")
+
+            # TODO: @aberdeenmorrow implement this as a CTE and check for the templated name in comparison_level
+            # TODO: @aberdeenmorrow Implement this check
+            tf_array_on_any_fuzzy_comparison = True if col_name == "street_addresses" else False
+            #     fuzzy_array_construction_sql = f"""
+            #         list_filter(
+            #             flatten(
+            #             list_transform({col.name_l},
+            #                 x -> list_transform({col.name_r},
+            #                     y -> list_value(x, y)
+            #                 )
+            #             )
+            #             ),
+            #             pair -> jaro_winkler_similarity(list_extract(pair, 1), list_extract(pair, 2)) >= 0.95 -- TODO: make this the dynamic parsed threshold
+            #         )
+            #         """
+            #     fuzzy_tf_intersection_sql = f"""
+            #     WHEN array_length(fuzzy_array) > 0
+            #         THEN
+            #             (
+            #                 SELECT ARRAY_AGG(
+            #                     CASE
+            #                         WHEN tf1.{tf_column_name} >= tf2.{tf_column_name} THEN tf1.{tf_column_name}
+            #                         ELSE tf2.{tf_column_name}
+            #                     END
+            #                     ORDER BY
+            #                         CASE
+            #                             WHEN tf1.{tf_column_name} >= tf2.{tf_column_name} THEN tf1.{tf_column_name}
+            #                             ELSE tf2.{tf_column_name}
+            #                         END ASC
+            #                 )
+            #                 FROM (
+            #                     SELECT DISTINCT list_extract(pair, 1) AS term1, list_extract(pair, 2) AS term2
+            #                     FROM UNNEST(fuzzy_array) AS t(pair)
+            #                 ) AS terms
+            #                 LEFT JOIN {tf_table_name} AS tf1
+            #                     ON tf1.{term_column_name} = terms.term1
+            #                 LEFT JOIN {tf_table_name} AS tf2
+            #                     ON tf2.{term_column_name} = terms.term2
+            #             )
+            #         ELSE
+            #             NULL"""
+
+            #     fuzzy_size_of_array_sql = f"ELSE array_length(fuzzy_array)"
+            #     fuzzy_array_exists_sql = f"OR (array_length(fuzzy_array) > 0)"
+
+            #     sql = f"""WITH cte AS (
+            #     SELECT
+            #         cv.*,
+            #         -- compute fuzzy_array once per row
+            #         array_intersect({col.name_l}, {col.name_r}) AS exact_match_array,
+            #         {fuzzy_array_construction_sql} AS fuzzy_array
+            #     FROM {sqls[0]['output_table_name']} AS cv
+            #     )
+            #     """
+            # else:
+            #     fuzzy_tf_intersection_sql, fuzzy_size_of_array_sql = "ELSE NULL", "ELSE NULL"
+            #     fuzzy_array_exists_sql = ""
+            #     sql = f"""WITH cte AS (SELECT cv.*, array_intersect({col.name_l}, {col.name_r}) AS exact_match_array FROM {sqls[0]['output_table_name']} AS cv)
+            #     """
+
+            # # TODO: @aberdeenmorrow pre-calculate arrays in a CTE
+            # sql += f"""SELECT DISTINCT
+            #     cv.unique_id_l,
+            #     cv.unique_id_r,
+            #     CASE
+            #         WHEN array_length(exact_match_array) > 0 THEN
+            #             array_length(exact_match_array)
+            #             {fuzzy_size_of_array_sql}
+            #     END AS size_of_intersection_{col_name},
+            #     CASE
+            #         WHEN array_length(exact_match_array) > 0 THEN
+            #             (
+            #                 SELECT
+            #                     ARRAY_AGG(tf.{tf_column_name} ORDER BY tf.{tf_column_name} ASC)
+            #                 FROM (
+            #                     SELECT DISTINCT t.term
+            #                     FROM UNNEST(exact_match_array) AS t(term)
+            #                 ) AS terms
+            #                 JOIN {tf_table_name} AS tf
+            #                 ON tf.{term_column_name} = terms.term
+            #             )
+            #         {fuzzy_tf_intersection_sql}
+            #     END AS sorted_tfs_of_intersection_{col_name},
+            #     CASE WHEN ({tf_array_on_any_fuzzy_comparison} AND array_length(exact_match_array) = 0) THEN TRUE ELSE FALSE END as is_fuzzy_comparison
+            #     FROM cte AS cv
+            #     WHERE
+            #         (array_length(exact_match_array) > 0) {fuzzy_array_exists_sql}
+            #     """
+
+            # ------------------------------------------------------------------------------------------------------------
+
+            # logger.info(f"Creating index on __splink__df_tf_{col_name} on {term_column_name}")
+            # self._linker._db_api._execute_sql_against_backend(
+            #     f"CREATE INDEX __splink__df_tf_{col_name}_idx ON __splink__df_tf_{col_name}({term_column_name});"
+            # )
+
+            # Build the SQL
+            filtered_cte = f"""
+            filtered_cv AS (
+                SELECT
+                    unique_id_l,
+                    unique_id_r,
+                    {col.name_l},
+                    {col.name_r}
+                FROM __splink__df_comparison_vectors
+                WHERE {gamma_column_name} IN ({', '.join(str(l) for l in gamma_levels)})
+            )
+            """
+
+            exact_cte = f"""
+            , exact_matches AS (
+                SELECT
+                    cv.unique_id_l,
+                    cv.unique_id_r,
+                    COUNT(*) AS size_of_intersection_{col_name},
+                    ARRAY_AGG(tf.{tf_column_name} ORDER BY tf.{tf_column_name})
+                        AS sorted_tfs_of_intersection_{col_name},
+                    FALSE AS is_fuzzy_comparison
+                FROM filtered_cv AS cv
+                CROSS JOIN UNNEST(
+                    array_intersect(
+                        cv.{col.name_l},
+                        cv.{col.name_r}
+                    )
+                ) AS t(term)
+                JOIN {tf_table_name} AS tf
+                ON tf.{term_column_name} = t.term
+                GROUP BY
+                cv.unique_id_l,
+                cv.unique_id_r
+            )
+            """
+
+            fuzzy_ctes = f"""
+            , exploded_l AS (
+                SELECT unique_id_l, unique_id_r, term1
+                FROM filtered_cv
+                CROSS JOIN UNNEST(filtered_cv.{col.name_l}) AS t1(term1)
+            ),
+            exploded_r AS (
+                SELECT unique_id_l, unique_id_r, term2
+                FROM filtered_cv
+                CROSS JOIN UNNEST(filtered_cv.{col.name_r}) AS t2(term2)
+            ),
+            fuzzy_pairs AS (
+                SELECT
+                l.unique_id_l,
+                l.unique_id_r,
+                l.term1,
+                r.term2
+                FROM exploded_l l
+                JOIN exploded_r r
+                ON l.unique_id_l = r.unique_id_l
+                AND l.unique_id_r = r.unique_id_r
+                AND jaro_winkler_similarity(l.term1, r.term2) >= 0.95
+            ),
+            fuzzy_matches AS (
+                SELECT
+                fp.unique_id_l,
+                fp.unique_id_r,
+                COUNT(*) AS size_of_intersection_{col_name},
+                ARRAY_AGG(
+                    GREATEST(tf1.{tf_column_name}, tf2.{tf_column_name})
+                    ORDER BY GREATEST(tf1.{tf_column_name}, tf2.{tf_column_name})
+                ) AS sorted_tfs_of_intersection_{col_name},
+                TRUE AS is_fuzzy_comparison
+                FROM fuzzy_pairs fp
+                LEFT JOIN {tf_table_name} tf1
+                ON tf1.{term_column_name} = fp.term1
+                LEFT JOIN {tf_table_name} tf2
+                ON tf2.{term_column_name} = fp.term2
+                GROUP BY fp.unique_id_l, fp.unique_id_r
+            )
+            """
+
+            if tf_array_on_any_fuzzy_comparison:
+                sql = f"""
+                CREATE TABLE {blocked_with_tf_table_name} AS
+                WITH
+                {filtered_cte}
+                {exact_cte}
+                {fuzzy_ctes}
+                SELECT * FROM exact_matches
+                UNION ALL
+                SELECT * FROM fuzzy_matches;
+                """
+            else:
+                sql = f"""
+                CREATE TABLE {blocked_with_tf_table_name} AS
+                WITH
+                {filtered_cte}
+                {exact_cte}
+                SELECT * FROM exact_matches;
+                """
+
+            logger.info(f"Optimized SQL:\n{sql}")
+            self._linker._db_api._execute_sql_against_backend(sql)
+
+            preview = self._linker._db_api._execute_sql_against_backend(
+                f"SELECT * FROM {blocked_with_tf_table_name} LIMIT 20"
+            )
+            logger.info(f"Preview of {col_name} tf intersection table: {preview}")
 
         # pipeline.enqueue_list_of_sqls(sqls)
         sqls = predict_from_comparison_vectors_sqls_using_settings(

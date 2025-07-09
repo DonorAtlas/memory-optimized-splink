@@ -148,12 +148,16 @@ class CoreModelSettings:
             "label_for_charts": "",
             "m_probability": None,
             "u_probability": None,
+            "max_epsilon_value": None,
+            "similarity_value": None,
             "m_probability_description": None,
             "u_probability_description": None,
             "has_tf_adjustments": False,
             "tf_adjustment_column": None,
             "tf_adjustment_weight": None,
             "tf_col_is_array": False,
+            "tf_modifier_custom_sql": None,
+            "log_base": None,
             "is_null_level": False,
             "bayes_factor": prob_to_bayes_factor(rr_match),
             "log2_bayes_factor": prob_to_match_weight(rr_match),
@@ -261,10 +265,21 @@ class Settings:
 
     def dedupe_tf_array_columns(self):
         array_cols = {}
-        for cl in self.comparisons:
-            for tf_col, is_array_column in cl._tf_array_columns.items():
-                if is_array_column:
-                    array_cols[tf_col] = is_array_column
+        for c in self.comparisons:
+            for cl in c.comparison_levels:
+                tf_col_name = cl._tf_adjustment_input_column_name
+                if cl._tf_col_is_array:
+                    if tf_col_name not in array_cols:
+                        array_cols[tf_col_name] = (
+                            True,
+                            c._gamma_column_name,
+                            [cl.comparison_vector_value],
+                        )
+                    else:
+                        gamma_column_name = array_cols[tf_col_name][1]
+                        gamma_levels = array_cols[tf_col_name][2]
+                        gamma_levels.append(cl.comparison_vector_value)  # type: ignore
+                        array_cols[tf_col_name] = (True, gamma_column_name, gamma_levels)
         return array_cols
 
     # TODO: move this to Comparison
@@ -283,7 +298,7 @@ class Settings:
                 )
 
     @property
-    def _tf_array_columns(self) -> dict[str, bool]:
+    def _tf_array_columns(self) -> dict[str, tuple[bool, str, list[int]]]:
         tf_array_columns = self.dedupe_tf_array_columns()
         return tf_array_columns
 

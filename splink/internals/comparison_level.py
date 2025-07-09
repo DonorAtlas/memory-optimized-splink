@@ -27,28 +27,18 @@ from splink.internals.sql_transform import sqlglot_tree_signature
 
 logger = logging.getLogger(__name__)
 
-total_records_in_field = col_fill_rate_map = {
-    "middle_name": 226_657_846,
-    "middle_initial": 226_657_846,
+total_records_in_field = {
+    "middle_name": 62_154_124,
+    "middle_initial": 189_090_682,
     "first_last": 226_657_846,
-    "employers": 226_657_846,
-    "occupations": 129_433_261,
-    "zip_5s": 226_657_846,
-    "city_state_pairs": 226_657_846,
-    "addr_digits": 226_657_846,  # false
+    "tokenized_employers": 19_910_270,
+    "occupations": 100_412_596,
+    "zip_5s": 226_657_360,
+    "city_state_pairs": 226_641_172,
+    "addr_digits": 226_657_594,  # false
     "street_addresses": 226_657_846,  # false
-}
-
-distinct_records_in_field = {
-    "middle_name": 1_590_000,
-    "middle_initial": 149,
-    "first_last": 69_599_908,
-    "employers": 19_910_270,  # false
-    "occupations": 129_388_080,  # false
-    "zip_5s": 50_395,
-    "city_state_pairs": 52_980,
-    "addr_digits": 28_433_651,
-    "street_addresses": 33_288_425,
+    "nonprofit_id": 98_890_398,
+    "nonprofit_coordinates": 98_890_398,
 }
 
 
@@ -159,8 +149,12 @@ class ComparisonLevel:
         tf_adjustment_weight: float = 1.0,
         tf_minimum_u_value: float = 0.0,
         tf_col_is_array: bool = False,
+        tf_modifier_custom_sql: str = None,
         m_probability: float = None,
         u_probability: float = None,
+        max_epsilon_value: float = 1.0,
+        similarity_value: float = 1.0,
+        log_base: float = 2.0,
         disable_tf_exact_match_detection: bool = False,
         fix_m_probability: bool = False,
         fix_u_probability: bool = False,
@@ -176,7 +170,15 @@ class ComparisonLevel:
         self._tf_adjustment_weight = tf_adjustment_weight
         self._tf_minimum_u_value = tf_minimum_u_value
         self._tf_col_is_array = tf_col_is_array
+        if tf_col_is_array:
+            self.log_base = log_base
+        self.tf_modifier_custom_sql = tf_modifier_custom_sql
         self._disable_tf_exact_match_detection = disable_tf_exact_match_detection
+
+        self.max_epsilon_value = max_epsilon_value
+        # TODO: make this a continuous function
+        self.similarity_value = similarity_value
+        self.log_base = log_base
 
         # internally these can be LEVEL_NOT_OBSERVED_TEXT, so allow for this
         self._m_probability: float | None | str = m_probability
@@ -509,6 +511,32 @@ class ComparisonLevel:
         return input_cols
 
     @property
+    def _input_columns_used_by_tf_modifier_custom_sql(self) -> list[InputColumn]:
+        # returns e.g. InputColumn(first_name), InputColumn(surname)
+        if self._is_else_level:
+            return []
+
+        if not self.tf_modifier_custom_sql:
+            return []
+
+        cols = get_columns_used_from_sql(self.tf_modifier_custom_sql, sqlglot_dialect=self.sqlglot_dialect)
+        # Parsed order seems to be roughly in reverse order of apearance
+        cols = cols[::-1]
+
+        cols = [re.sub(r"_L$|_R$|^tf_", "", c, flags=re.IGNORECASE) for c in cols]
+        cols = dedupe_preserving_order(cols)
+
+        input_cols = []
+        for c in cols:
+            # We could have tf adjustments for surname on a dmeta_surname column
+            # If so, we want to set the tf adjustments against the surname col,
+            # not the dmeta_surname one
+
+            input_cols.append(InputColumn(c, sqlglot_dialect_str=self.sqlglot_dialect))
+
+        return input_cols
+
+    @property
     def _columns_to_select_for_blocking(self):
         # e.g. l.first_name as first_name_l, r.first_name as first_name_r
         output_cols = []
@@ -521,6 +549,15 @@ class ComparisonLevel:
                     continue
                 output_cols.extend(self._tf_adjustment_input_column.l_r_tf_names_as_l_r)
 
+        if self.tf_modifier_custom_sql:
+            if self.tf_modifier_custom_sql:
+                output_cols.extend(
+                    [
+                        c
+                        for col in self._input_columns_used_by_tf_modifier_custom_sql
+                        for c in col.l_r_tf_names_as_l_r
+                    ]
+                )
         return dedupe_preserving_order(output_cols)
 
     @property
@@ -624,46 +661,41 @@ class ComparisonLevel:
             tf_adj_col = self._tf_adjustment_input_column
             tf_col_is_array = self._tf_col_is_array
             col_name = tf_adj_col.unquote().name.replace(" ", "_")
+            N = total_records_in_field[col_name]
+
             if not tf_adj_col:
                 sql = ""
 
             elif tf_col_is_array:
-                array_l = f"cv.{tf_adj_col.name_l}"
-                array_r = f"cv.{tf_adj_col.name_r}"
-
-                # 1) existence = non-empty intersection of base arrays
-                # TODO: @aberdeenmorrow make this work with any array selection based on the cl
-                tf_adjustment_exists = f"ARRAY_LENGTH(ARRAY_INTERSECT({array_l}, {array_r})) > 0"
-                # TODO: this requires tf tables to be registered without hashes or some lookup with the db to get physical names. Perhaps pass a param through the Comparison?
-                # tf_table_name = f"__splink__df_tf_{tf_adj_col.unquote().name.replace(' ', '_')}"
-
-                # 2) for each side, pull max(tf) over just the intersected terms
-                min_tf_of_intersection_sql = f"""(
-                    {col_name}_tf.min_tf_{col_name}
+                sorted_tfs_of_intersection_sql = f"""(
+                    {col_name}_tf.sorted_tfs_of_intersection_{col_name}
                 )"""
+                tf_adjustment_exists = f"array_length({sorted_tfs_of_intersection_sql}) > 0"
 
-                # 3) coalesce-compare logic, just like your scalar branch
-                if self._tf_minimum_u_value == 0.0:
-                    divisor_sql = min_tf_of_intersection_sql
-                else:
-                    divisor_sql = f"""GREATEST({min_tf_of_intersection_sql}, cast({self._tf_minimum_u_value} as float8))"""
+                # Note that you cannot set the base of the log in duckdb, so we use the base change formula log_{log_base}(x) = ln(x)/ln(log_base)
+                sql = f"""
+                WHEN cv.{gamma_colname_value_is_this_level} THEN
+                    CASE
+                        WHEN array_length({sorted_tfs_of_intersection_sql}) > 1 THEN
+                            ({N} / {sorted_tfs_of_intersection_sql}[1])
+                            +
+                            (
+                                SELECT SUM((LN((row_number + 1)/row_number) / LN({self.log_base})) * ({N}/value))
+                                FROM (
+                                    SELECT value, ROW_NUMBER() OVER (ORDER BY value) as row_number
+                                    FROM UNNEST({sorted_tfs_of_intersection_sql}) AS t(value)
+                                ) AS numbered_values
+                                WHERE row_number > 1
+                            )
+                        ELSE
+                            ({N} / {sorted_tfs_of_intersection_sql}[1])
+                    END
+                """
 
-                # 4) final WHEN…THEN clause
-                sql = f"""WHEN {gamma_colname_value_is_this_level} THEN
-                (CASE 
-                    WHEN {tf_adjustment_exists}
-                    THEN POW(
-                        cast({self._u_probability_corresponding_to_exact_match(comparison_levels)} as float8) / {divisor_sql},
-                        cast({self._tf_adjustment_weight} as float8)
-                    )
-                    ELSE cast(1 as float8)
-                END)"""
+            elif self._is_exact_match:
+                product_l_r = f"(cv.{tf_adj_col.tf_name_l})"
 
-            else:
-                coalesce_l_r = f"coalesce(cv.{tf_adj_col.tf_name_l}, cv.{tf_adj_col.tf_name_r})"
-                coalesce_r_l = f"coalesce(cv.{tf_adj_col.tf_name_r}, cv.{tf_adj_col.tf_name_l})"
-
-                tf_adjustment_exists = f"{coalesce_l_r} is not null"
+                tf_adjustment_exists = f"{product_l_r} is not null"
 
                 # Using coalesce protects against one of the tf adjustments being null
                 # Which would happen if the user provided their own tf adjustment table
@@ -672,44 +704,85 @@ class ComparisonLevel:
                 # In this case rather than taking the greater of the two, we take
                 # whichever value exists
 
-                sql = f"""
-                WHEN {gamma_colname_value_is_this_level} THEN
-                (CASE
-                    WHEN {tf_adjustment_exists}
-                    THEN 
-                    ELSE cast(1 as float8)
-                END)
-                """
-
                 if self._tf_minimum_u_value == 0.0:
-                    divisor_sql = f"""
-                    (CASE
-                        WHEN {coalesce_l_r} >= {coalesce_r_l}
-                        THEN {coalesce_l_r}
-                        ELSE {coalesce_r_l}
-                    END)
-                    """
+                    divisor_sql = f"{product_l_r}"
                 else:
                     # This sql works correctly even when the tf_minimum_u_value is 0.0
                     # but is less efficient to execute, hence the above if statement
                     divisor_sql = f"""
                     (CASE
-                        WHEN {coalesce_l_r} >= {coalesce_r_l}
-                        AND {coalesce_l_r} > cast({self._tf_minimum_u_value} as float8)
-                            THEN {coalesce_l_r}
-                        WHEN {coalesce_r_l}  > cast({self._tf_minimum_u_value} as float8)
-                            THEN {coalesce_r_l}
+                        WHEN {product_l_r} > cast({self._tf_minimum_u_value} as float8)
+                            THEN {product_l_r}
                         ELSE cast({self._tf_minimum_u_value} as float8)
                     END)
                     """
 
-                N = total_records_in_field[col_name]
-                C = distinct_records_in_field[col_name]
+                if self.tf_modifier_custom_sql:
+                    multiplier_sql = f"({N} / ({divisor_sql} * ({self.tf_modifier_custom_sql})))"
+                else:
+                    multiplier_sql = f"({N} / {divisor_sql})"
 
                 sql = f"""
                 WHEN  {gamma_colname_value_is_this_level} then
                     (CASE WHEN {tf_adjustment_exists}
-                    THEN ({N} / ({C} * {divisor_sql}))
+                    THEN {multiplier_sql}
+                    ELSE cast(1 as float8)
+                    END)
+                """
+
+            else:
+                max_epsilon_value = self.max_epsilon_value
+                similarity_value = self.similarity_value
+                product_l_r = f"(cv.{tf_adj_col.tf_name_l} * cv.{tf_adj_col.tf_name_r})"
+
+                tf_adjustment_exists = f"{product_l_r} is not null"
+
+                # Using coalesce protects against one of the tf adjustments being null
+                # Which would happen if the user provided their own tf adjustment table
+                # That didn't contain some of the values in this data
+
+                # In this case rather than taking the greater of the two, we take
+                # whichever value exists
+
+                # if self._tf_minimum_u_value == 0.0:
+                #     divisor_sql = f"""
+                #     (CASE
+                #         WHEN {coalesce_l_r} >= {coalesce_r_l}
+                #         THEN {coalesce_l_r}
+                #         ELSE {coalesce_r_l}
+                #     END)
+                #     """
+                # else:
+                #     # This sql works correctly even when the tf_minimum_u_value is 0.0
+                #     # but is less efficient to execute, hence the above if statement
+                #     divisor_sql = f"""
+                #     (CASE
+                #         WHEN {coalesce_l_r} >= {coalesce_r_l}
+                #         AND {coalesce_l_r} > cast({self._tf_minimum_u_value} as float8)
+                #             THEN {coalesce_l_r}
+                #         WHEN {coalesce_r_l}  > cast({self._tf_minimum_u_value} as float8)
+                #             THEN {coalesce_r_l}
+                #         ELSE cast({self._tf_minimum_u_value} as float8)
+                #     END)
+                #     """
+
+                tf_score_sql = f"(({similarity_value * N}/POW({product_l_r}, 0.5)))"
+
+                second_term = (1 - similarity_value) * max_epsilon_value * N**2
+                if second_term != 0:
+                    logger.info(f"adding second term to {self.label_for_charts}: {second_term}")
+                    tf_score_sql += f"+ ({second_term}/{product_l_r})"
+                # (({similarity_value} / POW({product_l_r}, 0.5)) + (( (1-{similarity_value}) * {max_epsilon_value} )/{product_l_r}))
+
+                if self.tf_modifier_custom_sql:
+                    multiplier_sql = f"(1/{self.tf_modifier_custom_sql}) * {tf_score_sql}"
+                else:
+                    multiplier_sql = f"{tf_score_sql}"
+
+                sql = f"""
+                WHEN  {gamma_colname_value_is_this_level} then
+                    (CASE WHEN {tf_adjustment_exists}
+                    THEN {multiplier_sql}
                     ELSE cast(1 as float8)
                     END)
                 """
@@ -741,6 +814,14 @@ class ComparisonLevel:
                 output["tf_adjustment_weight"] = self._tf_adjustment_weight
             if self._tf_col_is_array:
                 output["tf_col_is_array"] = self._tf_col_is_array
+                output["log_base"] = self.log_base
+            if self.tf_modifier_custom_sql:
+                output["tf_modifier_custom_sql"] = self.tf_modifier_custom_sql
+        if not self._is_exact_match:
+            if self.max_epsilon_value:
+                output["max_epsilon_value"] = self.max_epsilon_value
+            if self.similarity_value:
+                output["similarity_value"] = self.similarity_value
 
         if self.is_null_level:
             output["is_null_level"] = True
@@ -773,10 +854,17 @@ class ComparisonLevel:
             output["m_probability_description"] = self._m_probability_description
             output["u_probability_description"] = self._u_probability_description
 
+        if not self._is_exact_match:
+            output["max_epsilon_value"] = self.max_epsilon_value
+            output["similarity_value"] = self.similarity_value
+
         output["has_tf_adjustments"] = self._has_tf_adjustments
         if self._has_tf_adjustments:
             output["tf_adjustment_column"] = self._tf_adjustment_input_column.input_name
             output["tf_col_is_array"] = self._tf_col_is_array
+            output["tf_modifier_custom_sql"] = self.tf_modifier_custom_sql
+            if self._tf_col_is_array:
+                output["log_base"] = self.log_base
         else:
             output["tf_adjustment_column"] = None
         output["tf_adjustment_weight"] = self._tf_adjustment_weight
@@ -818,6 +906,11 @@ class ComparisonLevel:
         return output_records
 
     def _validate(self):
+        if not self._is_exact_match:
+            if not self.max_epsilon_value and self.similarity_value:
+                raise ValueError(
+                    "max_epsilon_value and similarity_value must be provided when not an exact match"
+                )
         self._validate_sql()
 
     def _abbreviated_sql(self, cutoff=75):

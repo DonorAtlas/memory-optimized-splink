@@ -122,7 +122,11 @@ def compute_df_concat_with_tf(linker: Linker, pipeline: CTEPipeline) -> SplinkDa
     sqls = compute_all_term_frequencies_sqls(linker, pipeline)
     pipeline.enqueue_list_of_sqls(sqls)
 
+    for sql in sqls:
+        logger.info(f"SQL for {sql['output_table_name']}: {sql['sql']}")
+
     nodes_with_tf = db_api.sql_pipeline_to_splink_dataframe(pipeline)
+
     cache["__splink__df_concat_with_tf"] = nodes_with_tf
     return nodes_with_tf
 

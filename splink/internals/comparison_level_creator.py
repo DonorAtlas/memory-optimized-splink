@@ -75,10 +75,14 @@ class ComparisonLevelCreator(ABC):
         *,
         m_probability: UnsuppliedNoneOr[float] = unsupplied_option,
         u_probability: UnsuppliedNoneOr[float] = unsupplied_option,
+        max_epsilon_value: UnsuppliedNoneOr[float] = unsupplied_option,
+        similarity_value: UnsuppliedNoneOr[float] = unsupplied_option,
+        log_base: UnsuppliedNoneOr[float] = unsupplied_option,
         tf_adjustment_column: UnsuppliedNoneOr[str] = unsupplied_option,
         tf_adjustment_weight: UnsuppliedNoneOr[float] = unsupplied_option,
         tf_minimum_u_value: UnsuppliedNoneOr[float] = unsupplied_option,
         tf_col_is_array: UnsuppliedNoneOr[bool] = unsupplied_option,
+        tf_modifier_custom_sql: UnsuppliedNoneOr[str] = unsupplied_option,
         is_null_level: UnsuppliedNoneOr[bool] = unsupplied_option,
         label_for_charts: UnsuppliedNoneOr[str] = unsupplied_option,
         disable_tf_exact_match_detection: UnsuppliedNoneOr[bool] = unsupplied_option,
@@ -109,6 +113,10 @@ class ComparisonLevelCreator(ABC):
                 comparison level.
                 Default is equivalent to None, in which case a default initial value
                 will be provided for this level.
+            max_epsilon_value
+            similarity_value # TODO @aberdeenmorrow make this a continuous function
+            log_base (float, optional): The base of the logarithm used in the term frequency adjustment for array comparisons.
+                Default is equivalent to 2.0.
             tf_adjustment_column (str, optional): Make term frequency adjustments for
                 this comparison level using this input column.
                 Default is equivalent to None, meaning that term-frequency adjustments
@@ -125,6 +133,10 @@ class ComparisonLevelCreator(ABC):
                 column is an array.
                 Default is equivalent to None, meaning the term frequency adjustment
                 column is not an array.
+            tf_modifier_custom_sql (str, optional): If provided, a custom SQL
+                modifier that will be used for this level.
+                Default is equivalent to None, in which case a default modifier will be
+                provided for this level.
             is_null_level (bool, optional): If true, m and u values will not be
                 estimated and instead the match weight will be zero for this column.
                 Default is equivalent to False.

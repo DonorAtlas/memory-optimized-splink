@@ -9,6 +9,7 @@ from splink.internals.misc import (
     dedupe_preserving_order,
     join_list_with_commas_final_and,
 )
+from splink.internals.parse_sql import get_columns_used_from_sql
 
 from .comparison_level import ComparisonLevel, _default_m_values, _default_u_values
 
@@ -153,6 +154,19 @@ class Comparison:
         return col_is_array
 
     @property
+    def _custom_tf_columns(self):
+        col_names = set()
+        cols = []
+        for cl in self.comparison_levels:
+            if cl.tf_modifier_custom_sql:
+                for col in cl._input_columns_used_by_tf_modifier_custom_sql:
+                    if col.input_name not in col_names:
+                        col_names.add(col.input_name)
+                        cols.append(col)
+
+        return cols
+
+    @property
     def _case_statement(self):
         sqls = [cl._when_then_comparison_vector_value_sql for cl in self.comparison_levels]
         sql = " ".join(sqls)
@@ -222,6 +236,14 @@ class Comparison:
                 if col is not None and col.is_array_column:
                     continue
                 output_cols.extend(col.tf_name_l_r)
+                if cl.tf_modifier_custom_sql:
+                    output_cols.extend(
+                        [
+                            c
+                            for col in cl._input_columns_used_by_tf_modifier_custom_sql
+                            for c in col.tf_name_l_r
+                        ]
+                    )
 
         return dedupe_preserving_order(output_cols)
 

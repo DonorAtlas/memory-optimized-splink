@@ -670,8 +670,9 @@ def materialise_exploded_id_tables(
         exploded_tables.append(marginal_ids_table)
 
     logger.info("Dropping exploded tables from database after materializing blocked pairs:")
-    for table in unnested_tables:
-        logger.info(f"--{table.physical_name}")
+    unique_unnested_table_names = list(set([table.physical_name for table in unnested_tables]))
+    for table in unique_unnested_table_names:
+        logger.info(f"--{table}")
 
     # TODO: figure out how to pass the same br objects from this to predict() so we can drop these tables
     if drop_exploded_tables:

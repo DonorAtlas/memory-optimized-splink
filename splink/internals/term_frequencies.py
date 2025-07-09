@@ -15,6 +15,8 @@ from splink.internals.charts import (
     load_chart_definition,
 )
 from splink.internals.input_column import InputColumn
+from splink.internals.misc import dedupe_preserving_order
+from splink.internals.parse_sql import get_columns_used_from_sql
 from splink.internals.pipeline import CTEPipeline
 from splink.internals.splink_dataframe import SplinkDataFrame
 
@@ -51,29 +53,29 @@ def term_frequencies_for_single_column_sqls(
         if tokenize:
             explode_sql = f"""
                 SELECT
-                    token.unnest as term
+                    token.unnest as {col_name_unquoted}
                 FROM {table_name} AS c
-                CROSS JOIN UNNEST(c.{col_name}) AS val
-                CROSS JOIN UNNEST(string_split(CAST(val.unnest AS VARCHAR), ' ')) AS token
-                WHERE c.{col_name} IS NOT NULL AND token IS NOT NULL
+                CROSS JOIN UNNEST(c.{col_name}) AS tf_{col_name_unquoted}
+                CROSS JOIN UNNEST(string_split(CAST(tf_{col_name_unquoted}.unnest AS VARCHAR), ' ')) AS token
+                WHERE c.{col_name} IS NOT NULL AND tf_{col_name_unquoted} IS NOT NULL AND token IS NOT NULL
             """
         else:
             explode_sql = f"""
                 SELECT
-                    LOWER(CAST(val.unnest AS VARCHAR)) AS term
+                    LOWER(CAST(val.unnest AS VARCHAR)) AS {col_name_unquoted}
                 FROM {table_name} AS c
-                CROSS JOIN UNNEST(c.{col_name}) AS val
-                WHERE c.{col_name} IS NOT NULL AND val IS NOT NULL
+                CROSS JOIN UNNEST(c.{col_name}) AS tf_{col_name_unquoted}
+                WHERE c.{col_name} IS NOT NULL AND tf_{col_name_unquoted} IS NOT NULL
             """
 
         sqls.append({"sql": explode_sql, "output_table_name": exploded_table_name})
 
         freqs_sql = f"""
             SELECT
-                term, COUNT(*)::FLOAT8 AS tf_value
+                {col_name_unquoted}, COUNT(*)::FLOAT8 AS tf_{col_name_unquoted}
             FROM {exploded_table_name}
-            GROUP BY term
-            {f"ORDER BY tf_value DESC" if ordered else ""}
+            GROUP BY {col_name_unquoted}
+            {f"ORDER BY tf_{col_name_unquoted} DESC" if ordered else ""}
         """
         sqls.append({"sql": freqs_sql, "output_table_name": tf_table_name})
 
@@ -94,6 +96,9 @@ def term_frequencies_for_single_column_sqls(
 def _join_tf_to_df_concat_sql(linker: Linker) -> str:
     settings_obj = linker._settings_obj
     tf_cols = settings_obj._term_frequency_columns
+    tf_cols.extend(col for c in settings_obj.comparisons for col in c._custom_tf_columns)
+
+    tf_cols = dedupe_preserving_order(tf_cols)
 
     select_cols = []
 
@@ -205,6 +210,14 @@ def _join_new_table_to_df_concat_with_tf_sql(
 def compute_all_term_frequencies_sqls(linker: Linker, pipeline: CTEPipeline) -> list[dict[str, str]]:
     settings_obj = linker._settings_obj
     tf_cols = settings_obj._term_frequency_columns
+    tf_col_names = set()
+    for c in settings_obj.comparisons:
+        for col in c._custom_tf_columns:
+            for tf_col in col.l_r_tf_names_as_l_r:
+                if tf_col not in tf_col_names:
+                    logger.info(f"adding {tf_col} to tf_cols")
+                    tf_col_names.add(tf_col)
+                    tf_cols.append(col)
 
     if not tf_cols:
         return [
@@ -216,11 +229,11 @@ def compute_all_term_frequencies_sqls(linker: Linker, pipeline: CTEPipeline) -> 
 
     sqls = []
     cache = linker._intermediate_table_cache
+
     for tf_col in tf_cols:
         if tf_col.is_array_column:
             continue
         tf_table_name = colname_to_tf_tablename(tf_col)
-
         if tf_table_name in cache:
             tf_table = cache.get_with_logging(tf_table_name)
             pipeline.append_input_dataframe(tf_table)
@@ -294,8 +307,12 @@ def tf_adjustment_chart(
         "tf_adjustment_weight",
         "tf_minimum_u_value",
         "tf_col_is_array",
+        "tf_modifier_custom_sql",
+        "log_base",
         "u_probability",
         "log2_bayes_factor",
+        "max_epsilon_value",
+        "similarity_value",
     ]
 
     # Select levels with TF adjustments
