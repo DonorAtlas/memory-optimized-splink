@@ -667,28 +667,15 @@ class ComparisonLevel:
                 sql = ""
 
             elif tf_col_is_array:
-                sorted_tfs_of_intersection_sql = f"""(
-                    {col_name}_tf.sorted_tfs_of_intersection_{col_name}
-                )"""
-                tf_adjustment_exists = f"array_length({sorted_tfs_of_intersection_sql}) > 0"
+                # For array TF columns, return the calculated TF adjustment from inference
+                tf_adjustment_column = f"{col_name}_tf.tf_adjustment_{col_name}"
+                tf_adjustment_exists = f"{tf_adjustment_column} is not null"
 
-                # Note that you cannot set the base of the log in duckdb, so we use the base change formula log_{log_base}(x) = ln(x)/ln(log_base)
                 sql = f"""
                 WHEN cv.{gamma_colname_value_is_this_level} THEN
-                    CASE
-                        WHEN array_length({sorted_tfs_of_intersection_sql}) > 1 THEN
-                            ({N} / {sorted_tfs_of_intersection_sql}[1])
-                            +
-                            (
-                                SELECT SUM((LN((row_number + 1)/row_number) / LN({self.log_base})) * ({N}/value))
-                                FROM (
-                                    SELECT value, ROW_NUMBER() OVER (ORDER BY value) as row_number
-                                    FROM UNNEST({sorted_tfs_of_intersection_sql}) AS t(value)
-                                ) AS numbered_values
-                                WHERE row_number > 1
-                            )
-                        ELSE
-                            ({N} / {sorted_tfs_of_intersection_sql}[1])
+                    CASE WHEN {tf_adjustment_exists}
+                    THEN {tf_adjustment_column}
+                    ELSE cast(1 as float8)
                     END
                 """
 
@@ -736,35 +723,6 @@ class ComparisonLevel:
                 product_l_r = f"(cv.{tf_adj_col.tf_name_l} * cv.{tf_adj_col.tf_name_r})"
 
                 tf_adjustment_exists = f"{product_l_r} is not null"
-
-                # Using coalesce protects against one of the tf adjustments being null
-                # Which would happen if the user provided their own tf adjustment table
-                # That didn't contain some of the values in this data
-
-                # In this case rather than taking the greater of the two, we take
-                # whichever value exists
-
-                # if self._tf_minimum_u_value == 0.0:
-                #     divisor_sql = f"""
-                #     (CASE
-                #         WHEN {coalesce_l_r} >= {coalesce_r_l}
-                #         THEN {coalesce_l_r}
-                #         ELSE {coalesce_r_l}
-                #     END)
-                #     """
-                # else:
-                #     # This sql works correctly even when the tf_minimum_u_value is 0.0
-                #     # but is less efficient to execute, hence the above if statement
-                #     divisor_sql = f"""
-                #     (CASE
-                #         WHEN {coalesce_l_r} >= {coalesce_r_l}
-                #         AND {coalesce_l_r} > cast({self._tf_minimum_u_value} as float8)
-                #             THEN {coalesce_l_r}
-                #         WHEN {coalesce_r_l}  > cast({self._tf_minimum_u_value} as float8)
-                #             THEN {coalesce_r_l}
-                #         ELSE cast({self._tf_minimum_u_value} as float8)
-                #     END)
-                #     """
 
                 tf_score_sql = f"(({similarity_value * N}/POW({product_l_r}, 0.5)))"
 

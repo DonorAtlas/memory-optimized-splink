@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import multiprocessing
 import time
 from typing import TYPE_CHECKING, Any
@@ -328,6 +329,8 @@ class LinkerInference:
         )
         logger.info(f"{sqls[1]['output_table_name']} size: {table_size}")
 
+        logger.info(f"TF array columns: {self._linker._settings_obj._tf_array_columns}")
+
         for col_name, (
             _,
             gamma_column_name,
@@ -339,124 +342,184 @@ class LinkerInference:
             )
             if not col:
                 continue
+
             blocked_with_tf_table_name = f"__splink__blocked_ids_pairs_{col_name}_with_tf"
             tf_table_name = f"__splink__df_tf_{col_name}"
 
             # TODO: @aberdeenmorrow Fix this in the underlying tf array tables for everything except employers
             term_column_name = "term" if not col_name == "tokenized_employers" else "employers"
             tf_column_name = "tf_value" if not col_name == "tokenized_employers" else f"tf_employers"
-            logger.info(f"tf_table_name: {tf_table_name}")
-            tf_table_columns = self._linker._db_api._execute_sql_against_backend(
-                f"SELECT * FROM {tf_table_name} LIMIT 1"
-            )
-            logger.info(f"tf_table_columns: {tf_table_columns.fetchall()}")
 
-            # TODO: @aberdeenmorrow implement this as a CTE and check for the templated name in comparison_level
-            # TODO: @aberdeenmorrow Implement this check
-            tf_array_on_any_fuzzy_comparison = True if col_name == "street_addresses" else False
+            # Get TF parameters from comparison levels
+            tf_params = self._get_tf_parameters_for_column(col_name, gamma_levels)
+            N = tf_params.get("N", 226_657_846)  # Default value
+            log_base = tf_params.get("log_base", 2.0)
+            exact = tf_params.get("exact", False)
+            fuzzy = tf_params.get("fuzzy", False)
 
-            # Build the SQL
-            filtered_cte = f"""base AS (
-                SELECT
-                    unique_id_l,
-                    unique_id_r,
-                    {col.name_l},
-                    {col.name_r}
-                FROM __splink__df_comparison_vectors
-                WHERE {gamma_column_name} IN ({', '.join(str(l) for l in gamma_levels)})
-                AND list_has_any({col.name_l}, {col.name_r})
-            )
-            """
-
-            exact_cte = f"""
-            , expanded AS (
-                SELECT b.unique_id_l, b.unique_id_r, u.term
-                FROM base AS b
-                CROSS JOIN UNNEST(b.{col.name_l}) AS u(term)
-                WHERE list_contains(b.{col.name_r}, u.term)
-            ),
-            joined AS (
-                SELECT
-                    e.unique_id_l,
-                    e.unique_id_r,
-                    tf.{tf_column_name},
-                    hash(e.unique_id_l, e.unique_id_r) % {multiprocessing.cpu_count()} AS bucket
-                FROM expanded AS e
-                JOIN {tf_table_name} AS tf
-                ON tf.{term_column_name} = e.term
-            )
-            """
-
-            exact_table_construction_sql = f"""SELECT
-            unique_id_l,
-            unique_id_r,
-            ARRAY_AGG({tf_column_name} ORDER BY {tf_column_name}) AS sorted_tfs_of_intersection_{col_name},
-            FALSE AS is_fuzzy_comparison
-            FROM joined
-            GROUP BY bucket, unique_id_l, unique_id_r
-            """
-
-            fuzzy_ctes = f"""
-            , exploded_l AS (
-                SELECT unique_id_l, unique_id_r, term1
-                FROM base
-                CROSS JOIN UNNEST(base.{col.name_l}) AS t1(term1)
-            ),
-            exploded_r AS (
-                SELECT unique_id_l, unique_id_r, term2
-                FROM base
-                CROSS JOIN UNNEST(base.{col.name_r}) AS t2(term2)
-            ),
-            fuzzy_pairs AS (
-                SELECT
-                l.unique_id_l,
-                l.unique_id_r,
-                l.term1,
-                r.term2
-                FROM exploded_l l
-                JOIN exploded_r r
-                ON l.unique_id_l = r.unique_id_l
-                AND l.unique_id_r = r.unique_id_r
-                AND jaro_winkler_similarity(l.term1, r.term2) >= 0.95
-            ),
-            fuzzy_matches AS (
-                SELECT
-                fp.unique_id_l,
-                fp.unique_id_r,
-                ARRAY_AGG(
-                    GREATEST(tf1.{tf_column_name}, tf2.{tf_column_name})
-                    ORDER BY GREATEST(tf1.{tf_column_name}, tf2.{tf_column_name})
-                ) AS sorted_tfs_of_intersection_{col_name},
-                TRUE AS is_fuzzy_comparison
-                FROM fuzzy_pairs fp
-                LEFT JOIN {tf_table_name} tf1
-                ON tf1.{term_column_name} = fp.term1
-                LEFT JOIN {tf_table_name} tf2
-                ON tf2.{term_column_name} = fp.term2
-                GROUP BY fp.unique_id_l, fp.unique_id_r
-            )
-            """
-
-            if tf_array_on_any_fuzzy_comparison:
-                sql = f"""CREATE TABLE {blocked_with_tf_table_name} AS
-                WITH {filtered_cte} {exact_cte} {fuzzy_ctes}
-            , exact_matches AS ({exact_table_construction_sql})
-                SELECT * FROM exact_matches
-                UNION ALL
-                SELECT * FROM fuzzy_matches;
+            if exact:
+                exact_gamma_levels = tf_params.get("exact_gamma_levels", [])
+                # Build the SQL
+                filtered_cte = f"""base AS (
+                    SELECT
+                        unique_id_l,
+                        unique_id_r,
+                        array_intersect({col.name_l}, {col.name_r}) AS common_terms
+                    FROM __splink__df_comparison_vectors
+                    WHERE {gamma_column_name} IN ({', '.join(str(l) for l in exact_gamma_levels)})
+                )
                 """
-            else:
-                sql = f"""CREATE TABLE {blocked_with_tf_table_name} AS
+
+                exact_cte = f"""
+                , {col_name}_values AS (
+    SELECT
+        f.unique_id_l,
+        f.unique_id_r,
+        array_agg(tf.{tf_column_name} ORDER BY tf.{tf_column_name}) AS tf_values
+    FROM base AS f
+    -- unnest exactly the intersecting terms
+    CROSS JOIN UNNEST(f.common_terms) AS z(term)
+    JOIN {tf_table_name} AS tf
+      ON tf.{term_column_name} = z.term
+    GROUP BY f.unique_id_l, f.unique_id_r
+    )
+                """
+
+                # Calculate TF adjustment in the exact matches
+                ln_base = math.log(log_base)
+                exact_table_construction_sql = f"""SELECT
+                unique_id_l,
+                unique_id_r,
+                FALSE AS is_fuzzy_comparison,
+                CASE
+        WHEN array_length(tf_values) > 1 THEN
+            -- first TF
+            ({N} / tf_values[1])
+            +
+            -- sum over the rest
+            (
+              SELECT SUM((LN((row_number + 1)/row_number) / value) * {N / ln_base})
+              FROM (
+                SELECT
+                  value,
+                  ROW_NUMBER() OVER (ORDER BY value) AS row_number
+                FROM UNNEST(tf_values) AS t(value)
+              ) AS numbered_values
+              WHERE row_number > 1
+            )
+        ELSE
+            -- single TF
+            ({N} / tf_values[1])
+    END AS tf_adjustment_{col_name}
+FROM {col_name}_values
+                """
+
+                sql = f"""CREATE TABLE {blocked_with_tf_table_name}{'_exact' if fuzzy else ''} AS
                 WITH {filtered_cte} {exact_cte} {exact_table_construction_sql}
                 """
 
-            logger.info(f"Optimized SQL:\n{sql}")
-            self._linker._db_api._execute_sql_against_backend(sql)
+                logger.info(f"Optimized SQL:\n{sql}")
+                self._linker._db_api._execute_sql_against_backend(sql)
 
-            preview = self._linker._db_api._execute_sql_against_backend(
-                f"SELECT * FROM {blocked_with_tf_table_name} LIMIT 20"
-            )
-            logger.info(f"Preview of {col_name} tf intersection table: {preview}")
+                preview = self._linker._db_api._execute_sql_against_backend(
+                    f"SELECT * FROM {blocked_with_tf_table_name}{'_exact' if fuzzy else ''} LIMIT 20"
+                )
+                logger.info(f"Preview of {col_name} tf intersection table: {preview}")
+            if fuzzy:
+                fuzzy_gamma_levels = tf_params.get("fuzzy_gamma_levels", [])
+                # Build the SQL
+                filtered_cte = f"""filtered AS (
+                    SELECT
+                        unique_id_l,
+                        unique_id_r,
+                        {col.name_l},
+                        {col.name_r}
+                    FROM __splink__df_comparison_vectors
+                    WHERE {gamma_column_name} IN ({', '.join(str(l) for l in fuzzy_gamma_levels)})
+                )
+                """
+
+                # Calculate TF adjustment in the exact matches
+                ln_base = math.log(log_base)
+
+                fuzzy_ctes = f"""
+                , fuzzy_pairs AS (
+    SELECT
+      f.unique_id_l,
+      f.unique_id_r,
+      t1.term1,
+      t2.term2
+    FROM filtered AS f
+    CROSS JOIN UNNEST(f.{col.name_l}) AS t1(term1)
+    CROSS JOIN UNNEST(f.{col.name_r}) AS t2(term2)
+    WHERE jaro_winkler_similarity(t1.term1, t2.term2) >= 0.95
+  ),
+  fuzzy_tf_values AS (
+    SELECT
+      fp.unique_id_l,
+      fp.unique_id_r,
+      array_agg(
+        GREATEST(tf1.tf_value, tf2.tf_value)
+        ORDER BY GREATEST(tf1.tf_value, tf2.tf_value)
+      ) AS tf_values
+    FROM fuzzy_pairs AS fp
+    LEFT JOIN {tf_table_name} AS tf1
+      ON tf1.term = fp.term1
+    LEFT JOIN {tf_table_name} AS tf2
+      ON tf2.term = fp.term2
+    GROUP BY fp.unique_id_l, fp.unique_id_r
+  ),
+  fuzzy_matches AS (
+    SELECT
+      unique_id_l,
+      unique_id_r,
+      TRUE  AS is_fuzzy_comparison,
+      CASE
+        WHEN array_length(tf_values) > 1 THEN
+          ({N} / tf_values[1])
+          +
+          (
+            SELECT SUM((LN((row_number+1)/row_number) / value) * {N / ln_base})
+            FROM (
+              SELECT
+                value,
+                ROW_NUMBER() OVER (ORDER BY value) AS row_number
+              FROM UNNEST(tf_values) AS t(value)
+            ) AS numbered_values
+            WHERE row_number > 1
+          )
+        ELSE
+          ({N} / tf_values[1])
+      END AS tf_adjustment_{col_name}
+    FROM fuzzy_tf_values
+  )
+                """
+
+                if exact:
+                    # If exact, merge fuzzy_matches onto exact_matches by left joining on unique_id_l and unique_id_r
+                    sql = f"""CREATE TABLE {blocked_with_tf_table_name} AS
+                    WITH {filtered_cte} {fuzzy_ctes}
+                    SELECT * FROM {blocked_with_tf_table_name}_exact
+                    UNION ALL
+                    SELECT * FROM fuzzy_matches
+                    WHERE (unique_id_l, unique_id_r) NOT IN (
+                    SELECT unique_id_l, unique_id_r
+                    FROM {blocked_with_tf_table_name}_exact
+                    );
+                    """
+                else:
+                    sql = f"""CREATE TABLE {blocked_with_tf_table_name} AS
+                    WITH {filtered_cte} {fuzzy_ctes}
+                    SELECT * FROM fuzzy_matches;
+                    """
+
+                logger.info(f"Optimized SQL:\n{sql}")
+                self._linker._db_api._execute_sql_against_backend(sql)
+
+                preview = self._linker._db_api._execute_sql_against_backend(
+                    f"SELECT * FROM {blocked_with_tf_table_name} LIMIT 20"
+                )
+                logger.info(f"Preview of {col_name} tf intersection table: {preview}")
 
         # pipeline.enqueue_list_of_sqls(sqls)
         sqls = predict_from_comparison_vectors_sqls_using_settings(
@@ -468,7 +531,11 @@ class LinkerInference:
         # __splink__df_match_weight_parts
         try:
             # sql = f"CREATE TABLE {sqls[0]['output_table_name']} AS {sqls[0]['sql']}"
-            sql = f"""CREATE TABLE {sqls[0]['output_table_name']} AS {sqls[0]['sql']}"""
+            sql = shard_comparison_vectors_sql(
+                core_sql=sqls[0]["sql"],
+                table_name=sqls[0]["output_table_name"],
+                num_shards=multiprocessing.cpu_count(),
+            )
             logger.info(f"Predict SQL: {sql}")
             self._linker._db_api._execute_sql_against_backend(sql)
         except Exception as e:
@@ -1119,3 +1186,44 @@ class LinkerInference:
         pipeline.enqueue_sql(comparison_vectors_sql, "__splink__df_comparison_vectors")
         logger.info(f"Computing comparison vector values")
         return self._linker._db_api.sql_pipeline_to_splink_dataframe(pipeline)
+
+    def _get_tf_parameters_for_column(self, col_name: str, gamma_levels: list[int]) -> dict:
+        """Get TF parameters for a specific column from comparison levels"""
+        tf_params = {}
+
+        # Get the total records in field from the global variable
+        from splink.internals.comparison_level import total_records_in_field
+
+        tf_params["N"] = total_records_in_field.get(col_name, 226_657_846)
+
+        # Find the comparison level that uses this column for TF adjustments
+        for comparison in self._linker._settings_obj.core_model_settings.comparisons:
+            for cl in comparison.comparison_levels:
+                if (
+                    cl._has_tf_adjustments
+                    and cl._tf_adjustment_input_column
+                    and cl._tf_adjustment_input_column.unquote().name.replace(" ", "_") == col_name
+                    and cl.comparison_vector_value in gamma_levels
+                ):
+                    tf_params["log_base"] = getattr(cl, "log_base", 2.0)
+                    tf_params["exact"] = True
+                    if "exact_gamma_levels" not in tf_params:
+                        tf_params["exact_gamma_levels"] = []
+
+                    # TODO @aberdeenmorrow this pains me. fix how terrible this is.
+                    if not (
+                        col_name == "street_addresses" and cl.comparison_vector_value == min(gamma_levels)
+                    ):
+                        tf_params["exact_gamma_levels"].append(cl.comparison_vector_value)
+
+                    # TODO @aberdeenmorrow fix these to read fuzzy matches dynamically
+                    if col_name == "street_addresses" and cl.comparison_vector_value == min(gamma_levels):
+                        tf_params["fuzzy"] = True
+                        if "fuzzy_gamma_levels" not in tf_params:
+                            tf_params["fuzzy_gamma_levels"] = []
+                        tf_params["fuzzy_gamma_levels"].append(cl.comparison_vector_value)
+            if "log_base" in tf_params:
+                break
+
+        logger.info(f"tf_params for {col_name}: {tf_params}")
+        return tf_params
