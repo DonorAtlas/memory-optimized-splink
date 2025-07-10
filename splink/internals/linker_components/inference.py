@@ -364,6 +364,7 @@ class LinkerInference:
                     SELECT
                         unique_id_l,
                         unique_id_r,
+                        shard,
                         array_intersect({col.name_l}, {col.name_r}) AS common_terms
                     FROM __splink__df_comparison_vectors
                     WHERE {gamma_column_name} IN ({', '.join(str(l) for l in exact_gamma_levels)})
@@ -375,13 +376,14 @@ class LinkerInference:
     SELECT
         f.unique_id_l,
         f.unique_id_r,
+        f.shard,
         array_agg(tf.{tf_column_name} ORDER BY tf.{tf_column_name}) AS tf_values
     FROM base AS f
     -- unnest exactly the intersecting terms
     CROSS JOIN UNNEST(f.common_terms) AS z(term)
     JOIN {tf_table_name} AS tf
       ON tf.{term_column_name} = z.term
-    GROUP BY f.unique_id_l, f.unique_id_r
+    GROUP BY f.unique_id_l, f.unique_id_r, f.shard
     )
                 """
 
@@ -390,7 +392,6 @@ class LinkerInference:
                 exact_table_construction_sql = f"""SELECT
                 unique_id_l,
                 unique_id_r,
-                FALSE AS is_fuzzy_comparison,
                 CASE
         WHEN array_length(tf_values) > 1 THEN
             -- first TF
@@ -414,11 +415,17 @@ class LinkerInference:
 FROM {col_name}_values
                 """
 
-                sql = f"""CREATE TABLE {blocked_with_tf_table_name}{'_exact' if fuzzy else ''} AS
-                WITH {filtered_cte} {exact_cte} {exact_table_construction_sql}
-                """
+                sql = f"""{exact_table_construction_sql}"""
 
-                logger.info(f"Optimized SQL:\n{sql}")
+                sql = shard_comparison_vectors_sql(
+                    core_sql=sql,
+                    pre_shard_cte=f"{filtered_cte} {exact_cte} ",
+                    num_shards=10,
+                    table_name=f"{blocked_with_tf_table_name}{'_exact' if fuzzy else ''}",
+                    input_table_name="__splink__df_comparison_vectors",
+                    logger=logger,
+                )
+                logger.info(f"optimized, sharded sql: {sql}")
                 self._linker._db_api._execute_sql_against_backend(sql)
 
                 preview = self._linker._db_api._execute_sql_against_backend(
@@ -432,6 +439,7 @@ FROM {col_name}_values
                     SELECT
                         unique_id_l,
                         unique_id_r,
+                        shard,
                         {col.name_l},
                         {col.name_r}
                     FROM __splink__df_comparison_vectors
@@ -447,6 +455,7 @@ FROM {col_name}_values
     SELECT
       f.unique_id_l,
       f.unique_id_r,
+      f.shard,
       t1.term1,
       t2.term2
     FROM filtered AS f
@@ -458,6 +467,7 @@ FROM {col_name}_values
     SELECT
       fp.unique_id_l,
       fp.unique_id_r,
+      fp.shard,
       array_agg(
         GREATEST(tf1.tf_value, tf2.tf_value)
         ORDER BY GREATEST(tf1.tf_value, tf2.tf_value)
@@ -467,13 +477,15 @@ FROM {col_name}_values
       ON tf1.term = fp.term1
     LEFT JOIN {tf_table_name} AS tf2
       ON tf2.term = fp.term2
-    GROUP BY fp.unique_id_l, fp.unique_id_r
-  ),
-  fuzzy_matches AS (
-    SELECT
+    GROUP BY fp.unique_id_l, fp.unique_id_r, fp.shard
+  )
+                """
+
+                # If exact, merge fuzzy_matches onto exact_matches by left joining on unique_id_l and unique_id_r
+                sql = f"""
+SELECT
       unique_id_l,
       unique_id_r,
-      TRUE  AS is_fuzzy_comparison,
       CASE
         WHEN array_length(tf_values) > 1 THEN
           ({N} / tf_values[1])
@@ -491,30 +503,33 @@ FROM {col_name}_values
         ELSE
           ({N} / tf_values[1])
       END AS tf_adjustment_{col_name}
-    FROM fuzzy_tf_values
-  )
+    FROM fuzzy_tf_values;
                 """
+                sql = shard_comparison_vectors_sql(
+                    core_sql=sql,
+                    table_name=f"{blocked_with_tf_table_name}{'_fuzzy' if exact else ''}",
+                    input_table_name="__splink__df_comparison_vectors",
+                    pre_shard_cte=f"{filtered_cte} {fuzzy_ctes} ",
+                    num_shards=10,
+                    logger=logger,
+                )
+
+                logger.info(f"Optimized, sharded SQL:\n{sql}")
+                self._linker._db_api._execute_sql_against_backend(sql)
+
+                preview = self._linker._db_api._execute_sql_against_backend(
+                    f"SELECT * FROM {blocked_with_tf_table_name}{'_fuzzy' if exact else ''} LIMIT 20"
+                )
+                logger.info(f"Preview of {col_name} tf intersection table: {preview}")
 
                 if exact:
-                    # If exact, merge fuzzy_matches onto exact_matches by left joining on unique_id_l and unique_id_r
-                    sql = f"""CREATE TABLE {blocked_with_tf_table_name} AS
-                    WITH {filtered_cte} {fuzzy_ctes}
+                    merge_sql = f"""CREATE TABLE {blocked_with_tf_table_name} AS 
                     SELECT * FROM {blocked_with_tf_table_name}_exact
                     UNION ALL
-                    SELECT * FROM fuzzy_matches
-                    WHERE (unique_id_l, unique_id_r) NOT IN (
-                    SELECT unique_id_l, unique_id_r
-                    FROM {blocked_with_tf_table_name}_exact
-                    );
-                    """
-                else:
-                    sql = f"""CREATE TABLE {blocked_with_tf_table_name} AS
-                    WITH {filtered_cte} {fuzzy_ctes}
-                    SELECT * FROM fuzzy_matches;
-                    """
-
-                logger.info(f"Optimized SQL:\n{sql}")
-                self._linker._db_api._execute_sql_against_backend(sql)
+                    SELECT * FROM {blocked_with_tf_table_name}_fuzzy;"""
+                    logger.info("Merging fuzzy and exact tables into one bf_tf table")
+                    logger.info(merge_sql)
+                    self._linker._db_api._execute_sql_against_backend(merge_sql)
 
                 preview = self._linker._db_api._execute_sql_against_backend(
                     f"SELECT * FROM {blocked_with_tf_table_name} LIMIT 20"
@@ -534,9 +549,11 @@ FROM {col_name}_values
             sql = shard_comparison_vectors_sql(
                 core_sql=sqls[0]["sql"],
                 table_name=sqls[0]["output_table_name"],
-                num_shards=multiprocessing.cpu_count(),
+                input_table_name="__splink__df_comparison_vectors",
+                logger=logger,
+                num_shards=100,
             )
-            logger.info(f"Predict SQL: {sql}")
+            logger.info(f"Optimized Predict SQL: {sql}")
             self._linker._db_api._execute_sql_against_backend(sql)
         except Exception as e:
             logger.error(f"Error creating table {sqls[0]['output_table_name']}: {e}")
