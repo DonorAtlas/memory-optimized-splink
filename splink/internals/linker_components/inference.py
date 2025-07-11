@@ -392,18 +392,20 @@ class LinkerInference:
                     CROSS JOIN UNNEST(f.terms_l) AS t1(term)
                     JOIN {tf_table_name} AS tf ON tf.{term_column_name} = t1.term
                     WHERE t1.term = ANY(f.terms_r)  -- Only include intersecting terms
-                ),
-                {col_name}_values AS (
-                    SELECT
-                        unique_id_l,
-                        unique_id_r,
-                        shard,
-                        array_agg(tf_value ORDER BY tf_value) AS tf_values
-                    FROM {col_name}_flattened
-                    GROUP BY unique_id_l, unique_id_r, shard
-                    HAVING array_length(array_agg(tf_value)) <= 10  -- Limit to max 10 terms for performance
                 )
+                SELECT
+                    unique_id_l,
+                    unique_id_r,
+                    shard,
+                    array_agg(tf_value ORDER BY tf_value) AS tf_values
+                FROM {col_name}_flattened
+                GROUP BY unique_id_l, unique_id_r, shard
+                HAVING array_length(array_agg(tf_value)) <= 10  -- Limit to max 10 terms for performance
                 """
+
+                self._linker._db_api._execute_sql_against_backend(
+                    f"CREATE TABLE {col_name}_values AS {exact_cte}"
+                )
 
                 # Simplified TF calculation - avoid complex subqueries
                 ln_base = math.log(log_base)
@@ -436,10 +438,9 @@ class LinkerInference:
 
                 sql = shard_comparison_vectors_sql(
                     core_sql=sql,
-                    pre_shard_cte=f"{filtered_cte} {exact_cte} ",
                     num_shards=5,  # Reduced from 10 for better performance
                     table_name=f"{blocked_with_tf_table_name}{'_exact' if fuzzy else ''}",
-                    input_table_name="__splink__df_comparison_vectors",
+                    input_table_name=f"{col_name}_values",
                     logger=logger,
                 )
                 logger.info(f"optimized, sharded sql: {sql}")
