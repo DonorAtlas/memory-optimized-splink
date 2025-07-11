@@ -367,44 +367,37 @@ class LinkerInference:
             if exact:
                 exact_gamma_levels = tf_params.get("exact_gamma_levels", [])
                 # Build the SQL
-                filtered_cte = f"""base AS (
+                exact_cte = f"""base AS (
                     SELECT
                         unique_id_l,
                         unique_id_r,
-                        shard,
                         {col.name_l} AS terms_l,
                         {col.name_r} AS terms_r
                     FROM __splink__df_comparison_vectors
                     WHERE {gamma_column_name} IN ({', '.join(str(l) for l in exact_gamma_levels)})
                 )
-                """
-
-                # Optimized approach: use UNNEST directly without CROSS JOIN
-                exact_cte = f"""
                 , {col_name}_flattened AS (
                     SELECT
                         f.unique_id_l,
                         f.unique_id_r,
-                        f.shard,
-                        term,
+                        t1.term,
                         tf.{tf_column_name} AS tf_value
                     FROM base AS f
                     CROSS JOIN UNNEST(f.terms_l) AS t1(term)
                     JOIN {tf_table_name} AS tf ON tf.{term_column_name} = t1.term
-                    WHERE t1.term = ANY(f.terms_r)  -- Only include intersecting terms
+                    WHERE t1.term = ANY(f.terms_r)  -- Move this condition here
                 )
                 SELECT
                     unique_id_l,
                     unique_id_r,
-                    shard,
                     array_agg(tf_value ORDER BY tf_value) AS tf_values
                 FROM {col_name}_flattened
-                GROUP BY unique_id_l, unique_id_r, shard
+                GROUP BY unique_id_l, unique_id_r
                 HAVING array_length(array_agg(tf_value)) <= 10  -- Limit to max 10 terms for performance
                 """
 
                 self._linker._db_api._execute_sql_against_backend(
-                    f"CREATE TABLE {col_name}_values AS {exact_cte}"
+                    f"CREATE TABLE {col_name}_values AS WITH {exact_cte}"
                 )
 
                 # Simplified TF calculation - avoid complex subqueries
