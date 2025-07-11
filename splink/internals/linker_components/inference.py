@@ -366,26 +366,29 @@ class LinkerInference:
 
             if exact:
                 exact_gamma_levels = tf_params.get("exact_gamma_levels", [])
+                gamma_count = self._linker._db_api._execute_sql_against_backend(
+                    f"SELECT COUNT(*) FROM __splink__df_comparison_vectors WHERE {gamma_column_name} IN ({', '.join(str(l) for l in exact_gamma_levels)})"
+                )
+                logger.info(f"Gamma count for {col_name}: {gamma_count}")
                 # Build the SQL
                 exact_cte = f"""base AS (
                     SELECT
                         unique_id_l,
                         unique_id_r,
-                        {col.name_l} AS terms_l,
-                        {col.name_r} AS terms_r
+                        array_intersect({col.name_l}, {col.name_r}) AS common_terms
                     FROM __splink__df_comparison_vectors
                     WHERE {gamma_column_name} IN ({', '.join(str(l) for l in exact_gamma_levels)})
                 )
+
                 , {col_name}_flattened AS (
                     SELECT
                         f.unique_id_l,
                         f.unique_id_r,
-                        t1.term,
+                        z.term,
                         tf.{tf_column_name} AS tf_value
                     FROM base AS f
-                    CROSS JOIN UNNEST(f.terms_l) AS t1(term)
-                    JOIN {tf_table_name} AS tf ON tf.{term_column_name} = t1.term
-                    WHERE t1.term = ANY(f.terms_r)  -- Move this condition here
+                    CROSS JOIN UNNEST(f.common_terms) AS z(term)
+                    JOIN {tf_table_name} AS tf ON tf.{term_column_name} = z.term
                 )
                 SELECT
                     unique_id_l,
@@ -396,9 +399,9 @@ class LinkerInference:
                 HAVING array_length(array_agg(tf_value)) <= 10  -- Limit to max 10 terms for performance
                 """
 
-                self._linker._db_api._execute_sql_against_backend(
-                    f"CREATE TABLE {col_name}_values AS WITH {exact_cte}"
-                )
+                sql = f"CREATE TABLE {col_name}_values AS WITH {exact_cte}"
+                logger.info(f"Exact CTE SQL: {sql}")
+                self._linker._db_api._execute_sql_against_backend(sql)
 
                 # Simplified TF calculation - avoid complex subqueries
                 ln_base = math.log(log_base)
@@ -438,6 +441,7 @@ class LinkerInference:
                 )
                 logger.info(f"optimized, sharded sql: {sql}")
                 self._linker._db_api._execute_sql_against_backend(sql)
+                self._linker._db_api._execute_sql_against_backend(f"DROP TABLE {col_name}_values")
 
                 preview = self._linker._db_api._execute_sql_against_backend(
                     f"SELECT * FROM {blocked_with_tf_table_name}{'_exact' if fuzzy else ''} LIMIT 20"
