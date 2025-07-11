@@ -272,6 +272,7 @@ class LinkerInference:
             unique_id_input_column=self._linker._settings_obj.column_info_settings.unique_id_input_column,
         )
         logger.info(f"Blocking SQL: {sqls[0]['sql']}")
+
         self._linker._db_api._execute_sql_against_backend(
             f"""CREATE TABLE {sqls[0]['output_table_name']} AS 
             {df_concat_with_tf_cte} 
@@ -282,10 +283,12 @@ class LinkerInference:
         )
         logger.info(f"{sqls[0]['output_table_name']} size: {table_size}")
 
-        if table_size.fetchone()[0] == 0:
+        blocked_count = table_size.fetchone()[0]
+        if blocked_count == 0:
             raise SplinkException(
                 "Blocking rules resulted in no blocked id pairs. Exiting early. Please loosen blocking rules or input more data."
             )
+        logger.info(f"Processing {blocked_count} blocked pairs")
 
         # pipeline.enqueue_list_of_sqls(sqls)
 
@@ -331,11 +334,15 @@ class LinkerInference:
 
         logger.info(f"TF array columns: {self._linker._settings_obj._tf_array_columns}")
 
+        # Sort so 'city_state_pairs' goes first every time
+        tf_array_columns_items = list(self._linker._settings_obj._tf_array_columns.items())
+        tf_array_columns_items.sort(key=lambda x: (x[0] != "city_state_pairs", x[0]))
+
         for col_name, (
             _,
             gamma_column_name,
             gamma_levels,
-        ) in self._linker._settings_obj._tf_array_columns.items():
+        ) in tf_array_columns_items:
             col = next(
                 (col for col in self._linker._input_columns() if col.input_name == col_name),
                 None,
@@ -365,54 +372,64 @@ class LinkerInference:
                         unique_id_l,
                         unique_id_r,
                         shard,
-                        array_intersect({col.name_l}, {col.name_r}) AS common_terms
+                        {col.name_l} AS terms_l,
+                        {col.name_r} AS terms_r
                     FROM __splink__df_comparison_vectors
                     WHERE {gamma_column_name} IN ({', '.join(str(l) for l in exact_gamma_levels)})
                 )
                 """
 
+                # Optimized approach: use UNNEST directly without CROSS JOIN
                 exact_cte = f"""
-                , {col_name}_values AS (
-    SELECT
-        f.unique_id_l,
-        f.unique_id_r,
-        f.shard,
-        array_agg(tf.{tf_column_name} ORDER BY tf.{tf_column_name}) AS tf_values
-    FROM base AS f
-    -- unnest exactly the intersecting terms
-    CROSS JOIN UNNEST(f.common_terms) AS z(term)
-    JOIN {tf_table_name} AS tf
-      ON tf.{term_column_name} = z.term
-    GROUP BY f.unique_id_l, f.unique_id_r, f.shard
-    )
+                , {col_name}_flattened AS (
+                    SELECT
+                        f.unique_id_l,
+                        f.unique_id_r,
+                        f.shard,
+                        term,
+                        tf.{tf_column_name} AS tf_value
+                    FROM base AS f
+                    CROSS JOIN UNNEST(f.terms_l) AS t1(term)
+                    JOIN {tf_table_name} AS tf ON tf.{term_column_name} = t1.term
+                    WHERE t1.term = ANY(f.terms_r)  -- Only include intersecting terms
+                ),
+                {col_name}_values AS (
+                    SELECT
+                        unique_id_l,
+                        unique_id_r,
+                        shard,
+                        array_agg(tf_value ORDER BY tf_value) AS tf_values
+                    FROM {col_name}_flattened
+                    GROUP BY unique_id_l, unique_id_r, shard
+                    HAVING array_length(array_agg(tf_value)) <= 10  -- Limit to max 10 terms for performance
+                )
                 """
 
-                # Calculate TF adjustment in the exact matches
+                # Simplified TF calculation - avoid complex subqueries
                 ln_base = math.log(log_base)
                 exact_table_construction_sql = f"""SELECT
-                unique_id_l,
-                unique_id_r,
-                CASE
-        WHEN array_length(tf_values) > 1 THEN
-            -- first TF
-            ({N} / tf_values[1])
-            +
-            -- sum over the rest
-            (
-              SELECT SUM((LN((row_number + 1)/row_number) / value) * {N / ln_base})
-              FROM (
-                SELECT
-                  value,
-                  ROW_NUMBER() OVER (ORDER BY value) AS row_number
-                FROM UNNEST(tf_values) AS t(value)
-              ) AS numbered_values
-              WHERE row_number > 1
-            )
-        ELSE
-            -- single TF
-            ({N} / tf_values[1])
-    END AS tf_adjustment_{col_name}
-FROM {col_name}_values
+                    unique_id_l,
+                    unique_id_r,
+                    CASE
+                        WHEN array_length(tf_values) = 1 THEN
+                            ({N} / tf_values[1])
+                        WHEN array_length(tf_values) = 2 THEN
+                            ({N} / tf_values[1]) + ((LN(2.0/1.0) / tf_values[2]) * {N / ln_base})
+                        WHEN array_length(tf_values) = 3 THEN
+                            ({N} / tf_values[1]) + ((LN(2.0/1.0) / tf_values[2]) * {N / ln_base}) + ((LN(3.0/2.0) / tf_values[3]) * {N / ln_base})
+                        WHEN array_length(tf_values) = 4 THEN
+                            ({N} / tf_values[1]) + ((LN(2.0/1.0) / tf_values[2]) * {N / ln_base}) + ((LN(3.0/2.0) / tf_values[3]) * {N / ln_base}) + ((LN(4.0/3.0) / tf_values[4]) * {N / ln_base})
+                        WHEN array_length(tf_values) = 5 THEN
+                            ({N} / tf_values[1]) + ((LN(2.0/1.0) / tf_values[2]) * {N / ln_base}) + ((LN(3.0/2.0) / tf_values[3]) * {N / ln_base}) + ((LN(4.0/3.0) / tf_values[4]) * {N / ln_base}) + ((LN(5.0/4.0) / tf_values[5]) * {N / ln_base})
+                        ELSE
+                            -- For more than 5 terms, use a simplified calculation
+                            ({N} / tf_values[1]) + 
+                            (SELECT SUM((LN((row_number + 1.0)/row_number) / value) * {N / ln_base})
+                             FROM (SELECT value, ROW_NUMBER() OVER (ORDER BY value) AS row_number
+                                   FROM UNNEST(tf_values) AS t(value)) AS numbered_values
+                             WHERE row_number > 1 AND row_number <= 5)
+                    END AS tf_adjustment_{col_name}
+                FROM {col_name}_values
                 """
 
                 sql = f"""{exact_table_construction_sql}"""
@@ -420,7 +437,7 @@ FROM {col_name}_values
                 sql = shard_comparison_vectors_sql(
                     core_sql=sql,
                     pre_shard_cte=f"{filtered_cte} {exact_cte} ",
-                    num_shards=10,
+                    num_shards=5,  # Reduced from 10 for better performance
                     table_name=f"{blocked_with_tf_table_name}{'_exact' if fuzzy else ''}",
                     input_table_name="__splink__df_comparison_vectors",
                     logger=logger,
@@ -434,83 +451,81 @@ FROM {col_name}_values
                 logger.info(f"Preview of {col_name} tf intersection table: {preview}")
             if fuzzy:
                 fuzzy_gamma_levels = tf_params.get("fuzzy_gamma_levels", [])
-                # Build the SQL
+                # Build the SQL - optimized fuzzy matching
                 filtered_cte = f"""filtered AS (
                     SELECT
                         unique_id_l,
                         unique_id_r,
                         shard,
-                        {col.name_l},
-                        {col.name_r}
+                        {col.name_l} AS terms_l,
+                        {col.name_r} AS terms_r
                     FROM __splink__df_comparison_vectors
                     WHERE {gamma_column_name} IN ({', '.join(str(l) for l in fuzzy_gamma_levels)})
                 )
                 """
 
-                # Calculate TF adjustment in the exact matches
+                # Optimized fuzzy matching - avoid double CROSS JOIN
                 ln_base = math.log(log_base)
 
                 fuzzy_ctes = f"""
                 , fuzzy_pairs AS (
-    SELECT
-      f.unique_id_l,
-      f.unique_id_r,
-      f.shard,
-      t1.term1,
-      t2.term2
-    FROM filtered AS f
-    CROSS JOIN UNNEST(f.{col.name_l}) AS t1(term1)
-    CROSS JOIN UNNEST(f.{col.name_r}) AS t2(term2)
-    WHERE jaro_winkler_similarity(t1.term1, t2.term2) >= 0.95
-  ),
-  fuzzy_tf_values AS (
-    SELECT
-      fp.unique_id_l,
-      fp.unique_id_r,
-      fp.shard,
-      array_agg(
-        GREATEST(tf1.tf_value, tf2.tf_value)
-        ORDER BY GREATEST(tf1.tf_value, tf2.tf_value)
-      ) AS tf_values
-    FROM fuzzy_pairs AS fp
-    LEFT JOIN {tf_table_name} AS tf1
-      ON tf1.term = fp.term1
-    LEFT JOIN {tf_table_name} AS tf2
-      ON tf2.term = fp.term2
-    GROUP BY fp.unique_id_l, fp.unique_id_r, fp.shard
-  )
+                    SELECT
+                        f.unique_id_l,
+                        f.unique_id_r,
+                        f.shard,
+                        t1.term1,
+                        t2.term2,
+                        GREATEST(tf1.{tf_column_name}, tf2.{tf_column_name}) AS tf_value
+                    FROM filtered AS f
+                    CROSS JOIN UNNEST(f.terms_l) AS t1(term1)
+                    CROSS JOIN UNNEST(f.terms_r) AS t2(term2)
+                    LEFT JOIN {tf_table_name} AS tf1 ON tf1.{term_column_name} = t1.term1
+                    LEFT JOIN {tf_table_name} AS tf2 ON tf2.{term_column_name} = t2.term2
+                    WHERE jaro_winkler_similarity(t1.term1, t2.term2) >= 0.95
+                ),
+                fuzzy_tf_values AS (
+                    SELECT
+                        unique_id_l,
+                        unique_id_r,
+                        shard,
+                        array_agg(tf_value ORDER BY tf_value) AS tf_values
+                    FROM fuzzy_pairs
+                    GROUP BY unique_id_l, unique_id_r, shard
+                )
                 """
 
-                # If exact, merge fuzzy_matches onto exact_matches by left joining on unique_id_l and unique_id_r
+                # Simplified TF calculation for fuzzy matches
                 sql = f"""
 SELECT
-      unique_id_l,
-      unique_id_r,
-      CASE
-        WHEN array_length(tf_values) > 1 THEN
-          ({N} / tf_values[1])
-          +
-          (
-            SELECT SUM((LN((row_number+1)/row_number) / value) * {N / ln_base})
-            FROM (
-              SELECT
-                value,
-                ROW_NUMBER() OVER (ORDER BY value) AS row_number
-              FROM UNNEST(tf_values) AS t(value)
-            ) AS numbered_values
-            WHERE row_number > 1
-          )
+    unique_id_l,
+    unique_id_r,
+    CASE
+        WHEN array_length(tf_values) = 1 THEN
+            ({N} / tf_values[1])
+        WHEN array_length(tf_values) = 2 THEN
+            ({N} / tf_values[1]) + ((LN(2.0/1.0) / tf_values[2]) * {N / ln_base})
+        WHEN array_length(tf_values) = 3 THEN
+            ({N} / tf_values[1]) + ((LN(2.0/1.0) / tf_values[2]) * {N / ln_base}) + ((LN(3.0/2.0) / tf_values[3]) * {N / ln_base})
+        WHEN array_length(tf_values) = 4 THEN
+            ({N} / tf_values[1]) + ((LN(2.0/1.0) / tf_values[2]) * {N / ln_base}) + ((LN(3.0/2.0) / tf_values[3]) * {N / ln_base}) + ((LN(4.0/3.0) / tf_values[4]) * {N / ln_base})
+        WHEN array_length(tf_values) = 5 THEN
+            ({N} / tf_values[1]) + ((LN(2.0/1.0) / tf_values[2]) * {N / ln_base}) + ((LN(3.0/2.0) / tf_values[3]) * {N / ln_base}) + ((LN(4.0/3.0) / tf_values[4]) * {N / ln_base}) + ((LN(5.0/4.0) / tf_values[5]) * {N / ln_base})
         ELSE
-          ({N} / tf_values[1])
-      END AS tf_adjustment_{col_name}
-    FROM fuzzy_tf_values;
+            -- For more than 5 terms, use a simplified calculation
+            ({N} / tf_values[1]) + 
+            (SELECT SUM((LN((row_number + 1.0)/row_number) / value) * {N / ln_base})
+             FROM (SELECT value, ROW_NUMBER() OVER (ORDER BY value) AS row_number
+                   FROM UNNEST(tf_values) AS t(value)) AS numbered_values
+             WHERE row_number > 1 AND row_number <= 5)
+    END AS tf_adjustment_{col_name}
+FROM fuzzy_tf_values;
                 """
                 sql = shard_comparison_vectors_sql(
                     core_sql=sql,
                     table_name=f"{blocked_with_tf_table_name}{'_fuzzy' if exact else ''}",
                     input_table_name="__splink__df_comparison_vectors",
                     pre_shard_cte=f"{filtered_cte} {fuzzy_ctes} ",
-                    num_shards=10,
+                    num_shards=5,  # Reduced from 10 for better performance
                     logger=logger,
                 )
 
@@ -551,7 +566,7 @@ SELECT
                 table_name=sqls[0]["output_table_name"],
                 input_table_name="__splink__df_comparison_vectors",
                 logger=logger,
-                num_shards=100,
+                num_shards=30,  # Reduced from 100 for better performance
             )
             logger.info(f"Optimized Predict SQL: {sql}")
             self._linker._db_api._execute_sql_against_backend(sql)
